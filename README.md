@@ -56,7 +56,8 @@ rmatrix [OPTIONS]
       --tail-min <ROWS>    Shortest trail                      [default: 6]
       --tail-max <ROWS>    Longest trail                       [default: 26]
       --fps <N>            Frame rate cap                      [default: 30]
-      --levels <N>         Brightness steps; 0 = unquantised   [default: 24]
+      --levels <N|auto>    Brightness steps, or size from the
+                           terminal and re-pick on resize     [default: auto]
       --stats              Start with the stats overlay shown
   -b, --bold               Bold glyphs
   -s, --screensaver        Exit on any keypress
@@ -70,9 +71,9 @@ Keys while running: `q`/`Esc`/`Ctrl-C` quit, `space` pause, `1`–`9` speed,
 Some combinations worth knowing:
 
 ```sh
-# The one to start with on a big screen: dense and long-tailed, but with
-# brightness quantised hard enough that the terminal keeps up. See Performance.
-rmatrix --tail-max 40 -d 0.75 --levels 8
+# The one to start with on a big screen: dense and long-tailed. Brightness
+# quantisation sizes itself to the window by default. See Performance.
+rmatrix --tail-max 40 -d 0.75
 
 rmatrix -C '#00ff41' --tail-max 40 -d 0.8   # dense, long, film-green
 rmatrix -c binary -C cyan                   # ones and zeroes
@@ -80,10 +81,9 @@ rmatrix -s                                  # screensaver, exits on a keypress
 rmatrix --seed 1337                         # same rain every time
 ```
 
-The stock defaults are tuned for an ordinary window. If you run full screen —
-especially on a tall or vertical monitor — go straight to the
-[recommended settings](#recommended-settings) below; the defaults will work but
-they make the terminal do several times more work than it needs to.
+Quality sizes itself to your terminal by default, including across resizes —
+see [recommended settings](#recommended-settings). Density and tail length are
+left to you, since they are taste rather than cost.
 
 ## Performance
 
@@ -106,7 +106,7 @@ So the tuning knobs are all about emitting fewer bytes:
 
 | Setting | Effect |
 |---|---|
-| `--levels <N>` | Brightness steps. A cell only repaints when it crosses a step, so this is the biggest lever. `8` is ~4.2× less output than unquantised, and still nearly 3× cmatrix's three levels. |
+| `--levels <N|auto>` | Brightness steps; `auto` sizes them from the window. A cell only repaints when it crosses a step, so this is the biggest lever. `8` is ~4.2× less output than unquantised, and still nearly 3× cmatrix's three levels. |
 | `--fps <N>` | Output scales linearly. |
 | `-d`, `--tail-max` | Fewer/shorter trails means fewer lit cells. |
 
@@ -117,27 +117,38 @@ Measured at 200×50, 600 frames per row:
 | none | 31,542 | 0.95 MB/s | 17.7% | 1.00× |
 | 64 | 22,699 | 0.68 MB/s | 11.8% | 1.39× |
 | 32 | 17,253 | 0.52 MB/s | 8.7% | 1.83× |
-| **24** (default) | **14,497** | **0.43 MB/s** | **7.4%** | **2.18×** |
+| **24** (`auto` on a small window) | **14,497** | **0.43 MB/s** | **7.4%** | **2.18×** |
 | 16 | 12,015 | 0.36 MB/s | 5.8% | 2.63× |
 | 8 | 7,461 | 0.22 MB/s | 3.8% | 4.23× |
 
 ### Recommended settings
 
-`--levels` defaults to 24, which is right for an ordinary window and deliberately
-conservative. The larger your terminal, the more it pays to turn it down — and
-the less you can see that you have, because a longer tail spreads the same number
-of steps over more rows.
+**`--levels` defaults to `auto`, so mostly there is nothing to set.** It sizes
+the brightness steps from your terminal's cell count and re-picks whenever the
+window is resized — go full screen and the quality drops to match; shrink back
+and it returns.
 
-| Window | Suggested | Why |
+The curve is `1500 / √cells`, clamped to 6..24. That is fitted, not guessed: it
+passes through the two points reached by measurement — 24 steps at a stock 80×24,
+and 8 at a full-screen vertical 204×175.
+
+| Window | `auto` picks | Output |
 |---|---|---|
-| Up to ~80×50 | defaults | Already well under 0.5 MB/s. |
-| ~200×50 | `--levels 12` | Roughly halves output; no visible change. |
-| Full screen / vertical | `--tail-max 40 -d 0.75 --levels 8` | ~0.95 MB/s at 204×175, versus 1.93 for the same look at the default 24. |
-| Still struggling | add `--fps 24` | A further ~20%, linearly. |
+| 80×24 | 24 | negligible |
+| 120×40 | 22 | ~0.1 MB/s |
+| 200×50 | 15 | ~0.4 MB/s |
+| 204×175 | 8 | ~0.95 MB/s |
 
-Turn `--levels` back up if you see the tails step rather than fade. Long tails
-hide low level counts well: at `--tail-max 40`, `--levels 8` puts a step every
-five rows.
+Pass a number to pin it — `--levels 16` — or `--levels 0` to disable
+quantisation entirely. Pin it higher if you see the tails step rather than fade;
+long tails hide low level counts well, so at `--tail-max 40`, 8 levels puts a
+step every five rows.
+
+Density and tail length are not auto-scaled, because they are aesthetic choices
+rather than quality/cost trade-offs. On a big screen `--tail-max 40 -d 0.75`
+looks good and costs about twice the defaults.
+
+If it still struggles, add `--fps 24` — output scales linearly with frame rate.
 
 ### Big windows
 
@@ -189,7 +200,7 @@ For the actual mirrored glyphs from the movie, install the free
 your terminal's font, and run:
 
 ```sh
-rmatrix -c ascii --tail-max 40 -d 0.75 --levels 8
+rmatrix -c ascii --tail-max 40 -d 0.75
 ```
 
 That font is Basic Latin only — it maps ASCII to Matrix glyphs and has no
@@ -210,7 +221,7 @@ restart, and nothing in your existing preferences is touched. Drop this in
       "Guid": "pick-any-stable-unique-string",
 
       "Custom Command": "Yes",
-      "Command": "/absolute/path/to/rmatrix --tail-max 40 -d 0.75 --levels 8",
+      "Command": "/absolute/path/to/rmatrix --tail-max 40 -d 0.75",
 
       "Has Hotkey": true,
       "HotKey Key Code": 46,

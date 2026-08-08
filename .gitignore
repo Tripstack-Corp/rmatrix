@@ -1,1 +1,4 @@
 /target
+
+# Agent worktrees created by Claude Code
+.claude/worktrees/

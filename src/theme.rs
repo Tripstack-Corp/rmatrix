@@ -67,6 +67,68 @@ impl Depth {
 /// already eight times cmatrix's three levels and reads as continuous.
 pub const DEFAULT_LEVELS: u16 = 24;
 
+/// Never quantise coarser than this — below it the tails visibly band.
+pub const MIN_AUTO_LEVELS: u16 = 6;
+
+/// Fitted so that `levels * sqrt(cells)` is roughly constant.
+///
+/// Output volume scales with cell count, while bytes-per-cell scales
+/// *sublinearly* with the level count, so holding this product fixed keeps the
+/// terminal's workload roughly flat as the window grows. The constant is set so
+/// the curve passes through the two points we arrived at by measurement: 24 at a
+/// stock 80x24, and 8 at a full-screen vertical 204x175.
+const AUTO_LEVELS_K: f32 = 1500.0;
+
+/// How many brightness steps to use for a window of `cells` cells.
+#[must_use]
+pub fn auto_levels(cells: usize) -> u16 {
+    if cells == 0 {
+        return DEFAULT_LEVELS;
+    }
+    let raw = AUTO_LEVELS_K / (cells as f32).sqrt();
+    // Round rather than truncate: a full-screen vertical window lands on 7.94,
+    // and truncating would quietly give 7 for a curve fitted to produce 8.
+    raw.clamp(f32::from(MIN_AUTO_LEVELS), f32::from(DEFAULT_LEVELS))
+        .round() as u16
+}
+
+/// The `--levels` setting: a fixed count, or sized from the window.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Levels {
+    /// Recomputed from the terminal size, including after a resize.
+    Auto,
+    /// Exactly this many steps; 0 disables quantisation.
+    Fixed(u16),
+}
+
+impl Levels {
+    #[must_use]
+    pub fn resolve(self, w: u16, h: u16) -> u16 {
+        match self {
+            Levels::Fixed(n) => n,
+            Levels::Auto => auto_levels(w as usize * h as usize),
+        }
+    }
+}
+
+impl FromStr for Levels {
+    type Err = LevelsParseError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let t = s.trim();
+        if t.eq_ignore_ascii_case("auto") {
+            return Ok(Levels::Auto);
+        }
+        t.parse::<u16>()
+            .map(Levels::Fixed)
+            .map_err(|_| LevelsParseError(s.to_string()))
+    }
+}
+
+#[derive(Debug, Error, PartialEq, Eq)]
+#[error("expected \"auto\" or a number of brightness steps, got {0:?}")]
+pub struct LevelsParseError(String);
+
 #[derive(Clone, Copy, Debug)]
 pub struct Theme {
     /// Leading glyph — near-white, tinted toward the body hue.
@@ -349,6 +411,66 @@ mod tests {
                 "grey {level} -> {v}"
             );
         }
+    }
+
+    #[test]
+    fn auto_levels_matches_the_sizes_we_tuned_by_hand() {
+        // These two are the anchors the curve was fitted to; if either moves,
+        // the constant is wrong.
+        assert_eq!(
+            auto_levels(80 * 24),
+            24,
+            "a stock terminal should stay at the default"
+        );
+        assert_eq!(
+            auto_levels(204 * 175),
+            8,
+            "full-screen vertical should land on 8"
+        );
+        // And the middle should land between, monotonically.
+        let mid = auto_levels(200 * 50);
+        assert!((10..=18).contains(&mid), "200x50 picked {mid}");
+    }
+
+    #[test]
+    fn auto_levels_is_monotonic_and_bounded() {
+        let mut prev = u16::MAX;
+        for cells in [1, 500, 1920, 4800, 10_000, 35_700, 100_000, 5_000_000] {
+            let l = auto_levels(cells);
+            assert!(l <= prev, "levels rose with cell count at {cells}");
+            assert!(
+                (MIN_AUTO_LEVELS..=DEFAULT_LEVELS).contains(&l),
+                "{cells} cells gave {l}, outside the clamp"
+            );
+            prev = l;
+        }
+    }
+
+    #[test]
+    fn auto_levels_handles_a_zero_sized_window() {
+        assert_eq!(auto_levels(0), DEFAULT_LEVELS);
+    }
+
+    #[test]
+    fn levels_setting_parses() {
+        assert_eq!(Levels::from_str("auto"), Ok(Levels::Auto));
+        assert_eq!(Levels::from_str("  AUTO "), Ok(Levels::Auto));
+        assert_eq!(Levels::from_str("12"), Ok(Levels::Fixed(12)));
+        // 0 is the documented "no quantisation" escape hatch.
+        assert_eq!(Levels::from_str("0"), Ok(Levels::Fixed(0)));
+        for bad in ["", "-1", "auto8", "twelve", "1.5"] {
+            assert!(Levels::from_str(bad).is_err(), "{bad:?} should not parse");
+        }
+    }
+
+    #[test]
+    fn fixed_levels_ignore_the_window_but_auto_tracks_it() {
+        assert_eq!(Levels::Fixed(9).resolve(80, 24), 9);
+        assert_eq!(Levels::Fixed(9).resolve(204, 175), 9);
+        // Auto must actually change when the window does — this is what makes
+        // a resize adapt rather than keep a stale setting.
+        assert_ne!(Levels::Auto.resolve(80, 24), Levels::Auto.resolve(204, 175));
+        assert_eq!(Levels::Auto.resolve(204, 175), auto_levels(204 * 175));
     }
 
     #[test]

@@ -15,7 +15,7 @@ use crossterm::terminal::{
     LeaveAlternateScreen,
 };
 use crossterm::{ExecutableCommand, QueueableCommand, cursor};
-use rmatrix::{BaseColor, Charset, Config, Depth, DrawStats, Rain, Renderer, Theme};
+use rmatrix::{BaseColor, Charset, Config, Depth, DrawStats, Levels, Rain, Renderer, Theme};
 use std::io::{Write, stdout};
 use std::process::ExitCode;
 use std::str::FromStr;
@@ -50,10 +50,11 @@ struct Args {
     #[arg(long, default_value_t = 30)]
     fps: u16,
 
-    /// Brightness steps in the trail. Lower means fewer escape sequences for
-    /// the terminal to parse; 0 disables quantisation.
-    #[arg(long, default_value_t = rmatrix::DEFAULT_LEVELS)]
-    levels: u16,
+    /// Brightness steps in the trail, or "auto" to size them from the terminal.
+    /// Lower means fewer escape sequences for the terminal to parse; 0 disables
+    /// quantisation. "auto" re-picks on resize.
+    #[arg(long, default_value = "auto")]
+    levels: Levels,
 
     /// Start with the stats overlay visible (toggle with `f`)
     #[arg(long)]
@@ -234,13 +235,15 @@ impl Meter {
         false
     }
 
-    fn line(&self) -> String {
+    fn line(&self, levels: u16, auto: bool) -> String {
         format!(
-            " {:.0} fps · {:.1} KB/frame · {:.2} MB/s · {:.1}% cells · q quit ",
+            " {:.0} fps · {:.1} KB/frame · {:.2} MB/s · {:.1}% cells · {}{} · q quit ",
             self.fps,
             self.bytes_per_frame / 1024.0,
             self.bytes_per_frame * self.fps / 1.0e6,
             self.damage_pct,
+            levels,
+            if auto { " auto" } else { "" },
         )
     }
 
@@ -250,13 +253,15 @@ impl Meter {
     /// which makes it the only place these numbers stay legible under a font
     /// that remaps ASCII to glyphs — exactly the case when pairing `-c ascii`
     /// with Matrix Code NFI.
-    fn title(&self) -> String {
+    fn title(&self, levels: u16, auto: bool) -> String {
         format!(
-            "rmatrix — {:.0} fps · {:.1} KB/frame · {:.2} MB/s · {:.1}% cells",
+            "rmatrix — {:.0} fps · {:.1} KB/frame · {:.2} MB/s · {:.1}% cells · {} levels{}",
             self.fps,
             self.bytes_per_frame / 1024.0,
             self.bytes_per_frame * self.fps / 1.0e6,
             self.damage_pct,
+            levels,
+            if auto { " (auto)" } else { "" },
         )
     }
 }
@@ -270,8 +275,14 @@ fn set_title<W: Write>(out: &mut W, title: &str) -> Result<()> {
 }
 
 /// Painted over the rain each frame, after the renderer has run.
-fn draw_overlay<W: Write>(out: &mut W, w: u16, meter: &Meter) -> Result<()> {
-    let text = meter.line();
+fn draw_overlay<W: Write>(
+    out: &mut W,
+    w: u16,
+    meter: &Meter,
+    levels: u16,
+    auto: bool,
+) -> Result<()> {
+    let text = meter.line(levels, auto);
     let trimmed: String = text.chars().take(w as usize).collect();
     out.queue(cursor::MoveTo(0, 0))?;
     out.queue(SetAttribute(Attribute::Reset))?;
@@ -329,7 +340,7 @@ fn run(args: &Args, s: Settings) -> Result<()> {
 
     let mut charset_idx = CYCLE.iter().position(|c| *c == args.charset).unwrap_or(0);
     let mut theme = Theme::from_base(s.base, s.rainbow);
-    theme.levels = args.levels;
+    theme.levels = args.levels.resolve(w, h);
     let mut bold = args.bold;
     let mut rain = Rain::new(w, h, s.config);
     let mut renderer = Renderer::new(w, h);
@@ -397,6 +408,10 @@ fn run(args: &Args, s: Settings) -> Result<()> {
                 Event::Resize(nw, nh) => {
                     w = nw.max(1);
                     h = nh.max(1);
+                    // Re-size the quality to the new window. Going full screen
+                    // on a large display can multiply the cell count tenfold,
+                    // and a setting that was right before will not be after.
+                    theme.levels = args.levels.resolve(w, h);
                     rain.resize(w, h);
                     renderer.resize(w, h);
                     out.write_all(b"\x1b[2J")?;
@@ -418,11 +433,20 @@ fn run(args: &Args, s: Settings) -> Result<()> {
         last_frame = now;
 
         if show_stats {
-            draw_overlay(&mut out, w, &meter)?;
+            draw_overlay(
+                &mut out,
+                w,
+                &meter,
+                theme.levels,
+                args.levels == Levels::Auto,
+            )?;
             // Only on refresh: retitling every frame is pointless churn, and
             // some terminals flash the title bar when it changes.
             if refreshed {
-                set_title(&mut out, &meter.title())?;
+                set_title(
+                    &mut out,
+                    &meter.title(theme.levels, args.levels == Levels::Auto),
+                )?;
             }
             // The overlay wrote colour and moved the cursor behind the
             // renderer's back; without this the next frame paints wrong.
@@ -587,21 +611,47 @@ mod tests {
         // them casually, this test should make them think about it first.
         let a = args();
         assert_eq!(a.fps, 30, "fps default drives output volume linearly");
-        assert_eq!(a.levels, rmatrix::DEFAULT_LEVELS);
+        assert_eq!(
+            a.levels,
+            Levels::Auto,
+            "quality should size itself to the window"
+        );
         assert!(!a.stats, "the overlay should be opt-in");
     }
 
     #[test]
     fn levels_and_stats_are_settable() {
         let a = Args::parse_from(["rmatrix", "--levels", "8", "--stats", "--fps", "120"]);
-        assert_eq!(a.levels, 8);
+        assert_eq!(a.levels, Levels::Fixed(8));
         assert!(a.stats);
         assert!(validate(&a).is_ok());
 
         // 0 is the documented "no quantisation" escape hatch.
         let a = Args::parse_from(["rmatrix", "--levels", "0"]);
-        assert_eq!(a.levels, 0);
+        assert_eq!(a.levels, Levels::Fixed(0));
         assert!(validate(&a).is_ok());
+    }
+
+    #[test]
+    fn auto_levels_track_the_window_but_a_fixed_setting_does_not() {
+        // The whole point of `auto`: a stock terminal and a full-screen vertical
+        // one are an order of magnitude apart in cells and should not share a
+        // quality setting.
+        let auto = Args::parse_from(["rmatrix"]).levels;
+        assert!(auto.resolve(80, 24) > auto.resolve(204, 175));
+
+        let fixed = Args::parse_from(["rmatrix", "--levels", "20"]).levels;
+        assert_eq!(fixed.resolve(80, 24), fixed.resolve(204, 175));
+    }
+
+    #[test]
+    fn bad_levels_are_rejected_by_the_parser() {
+        for bad in ["twelve", "-3", "auto2", "1.5"] {
+            assert!(
+                Args::try_parse_from(["rmatrix", "--levels", bad]).is_err(),
+                "--levels {bad} should be rejected"
+            );
+        }
     }
 
     #[test]
@@ -616,7 +666,7 @@ mod tests {
             1000,
         );
         assert_eq!(m.fps, 0.0, "should not publish an average from one sample");
-        assert!(m.line().contains("fps"));
+        assert!(m.line(24, true).contains("fps"));
     }
 
     #[test]
@@ -669,7 +719,7 @@ mod tests {
                 1000,
             );
         }
-        let t = m.title();
+        let t = m.title(8, true);
         assert!(t.starts_with("rmatrix"));
         assert!(t.contains("fps"), "{t}");
         assert!(
@@ -692,6 +742,6 @@ mod tests {
             m.record(Duration::from_millis(50), DrawStats::default(), 0);
         }
         assert_eq!(m.damage_pct, 0.0);
-        assert!(m.line().contains("0.0% cells"));
+        assert!(m.line(24, false).contains("0.0% cells"));
     }
 }
