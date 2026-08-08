@@ -362,7 +362,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "rmatrix"
+name = "rmatrix-reloaded"
 version = "0.2.0"
 dependencies = [
  "anyhow",

@@ -1,5 +1,8 @@
 [package]
-name = "rmatrix"
+# The crate is `rmatrix-reloaded` because `rmatrix` on crates.io belongs to an
+# unrelated project. Both the binary and the library keep the name `rmatrix`, so
+# nothing about using it changes — only what you type to install it.
+name = "rmatrix-reloaded"
 version = "0.2.0"
 edition = "2024"
 description = "Digital rain for modern terminals"
@@ -8,9 +11,19 @@ repository = "https://github.com/Tripstack-Corp/rmatrix"
 readme = "README.md"
 keywords = ["matrix", "terminal", "tui", "screensaver", "cli"]
 categories = ["command-line-utilities"]
-# Not published to crates.io: the `rmatrix` name there belongs to an unrelated
-# project. Install with `cargo install --git`.
-publish = false
+# examples/perf.rs ships: the README tells people to run it to reproduce the
+# performance numbers, and a claim you can't check is worth less.
+exclude = [".github/", "scripts/"]
+
+# Keeping the library named `rmatrix` means every `use rmatrix::...` in the
+# binary, tests and examples stays as it is.
+[lib]
+name = "rmatrix"
+path = "src/lib.rs"
+
+[[bin]]
+name = "rmatrix"
+path = "src/main.rs"
 
 [dependencies]
 anyhow = "1.0.104"
