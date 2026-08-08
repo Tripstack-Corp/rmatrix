@@ -205,7 +205,9 @@ struct Meter {
 }
 
 impl Meter {
-    fn record(&mut self, dt: Duration, stats: DrawStats, cells: usize) {
+    /// Returns true when the averaging window closed and the published figures
+    /// changed — the caller uses that to avoid rewriting the title every frame.
+    fn record(&mut self, dt: Duration, stats: DrawStats, cells: usize) -> bool {
         self.frames += 1;
         self.window += dt;
         self.bytes += stats.bytes;
@@ -227,7 +229,9 @@ impl Meter {
                 damage_pct: self.damage_pct,
                 ..Meter::default()
             };
+            return true;
         }
+        false
     }
 
     fn line(&self) -> String {
@@ -239,6 +243,30 @@ impl Meter {
             self.damage_pct,
         )
     }
+
+    /// Same figures, for the window title.
+    ///
+    /// The title is rendered by the OS in the UI font, not by the terminal grid,
+    /// which makes it the only place these numbers stay legible under a font
+    /// that remaps ASCII to glyphs — exactly the case when pairing `-c ascii`
+    /// with Matrix Code NFI.
+    fn title(&self) -> String {
+        format!(
+            "rmatrix — {:.0} fps · {:.1} KB/frame · {:.2} MB/s · {:.1}% cells",
+            self.fps,
+            self.bytes_per_frame / 1024.0,
+            self.bytes_per_frame * self.fps / 1.0e6,
+            self.damage_pct,
+        )
+    }
+}
+
+/// OSC 2. Terminals that don't support it ignore the sequence.
+fn set_title<W: Write>(out: &mut W, title: &str) -> Result<()> {
+    // Strip anything that would terminate the sequence early.
+    let safe: String = title.chars().filter(|c| !c.is_control()).collect();
+    write!(out, "\x1b]2;{safe}\x07")?;
+    Ok(())
 }
 
 /// Painted over the rain each frame, after the renderer has run.
@@ -265,6 +293,8 @@ fn setup(bold: bool) -> Result<()> {
     out.execute(DisableLineWrap)?;
     out.execute(cursor::Hide)?;
     out.execute(Clear(ClearType::All))?;
+    // Save the window title so the stats meter can borrow it and hand it back.
+    out.write_all(b"\x1b[22;2t")?;
     if bold {
         out.execute(SetAttribute(Attribute::Bold))?;
     }
@@ -275,6 +305,7 @@ fn setup(bold: bool) -> Result<()> {
 /// must be safe to call more than once.
 fn restore() {
     let mut out = stdout();
+    let _ = out.write_all(b"\x1b[23;2t"); // give the window title back
     let _ = out.execute(SetAttribute(Attribute::Reset));
     let _ = out.execute(cursor::Show);
     let _ = out.execute(EnableLineWrap);
@@ -354,6 +385,9 @@ fn run(args: &Args, s: Settings) -> Result<()> {
                         }
                         KeyCode::Char('f') => {
                             show_stats = !show_stats;
+                            if !show_stats {
+                                set_title(&mut out, "rmatrix")?;
+                            }
                             // Repaint so the row the overlay occupied comes back.
                             renderer.resize(w, h);
                         }
@@ -380,11 +414,16 @@ fn run(args: &Args, s: Settings) -> Result<()> {
             rain.step(dt);
         }
         let stats = renderer.draw(&mut out, &rain, &theme, s.depth)?;
-        meter.record(now - last_frame, stats, w as usize * h as usize);
+        let refreshed = meter.record(now - last_frame, stats, w as usize * h as usize);
         last_frame = now;
 
         if show_stats {
             draw_overlay(&mut out, w, &meter)?;
+            // Only on refresh: retitling every frame is pointless churn, and
+            // some terminals flash the title bar when it changes.
+            if refreshed {
+                set_title(&mut out, &meter.title())?;
+            }
             // The overlay wrote colour and moved the cursor behind the
             // renderer's back; without this the next frame paints wrong.
             renderer.forget_cursor_and_color();
@@ -600,6 +639,49 @@ mod tests {
             (m.damage_pct - 10.0).abs() < 0.5,
             "damage was {}",
             m.damage_pct
+        );
+    }
+
+    #[test]
+    fn meter_signals_only_when_its_window_closes() {
+        let mut m = Meter::default();
+        // Under the 500ms window: no refresh, so no title churn.
+        assert!(!m.record(Duration::from_millis(100), DrawStats::default(), 100));
+        assert!(!m.record(Duration::from_millis(300), DrawStats::default(), 100));
+        // Crossing it publishes.
+        assert!(m.record(Duration::from_millis(200), DrawStats::default(), 100));
+        // And the window resets, so the next tick is quiet again.
+        assert!(!m.record(Duration::from_millis(100), DrawStats::default(), 100));
+    }
+
+    #[test]
+    fn title_stays_legible_without_control_characters() {
+        // The title is the fallback readout when the terminal font remaps
+        // ASCII, so it must survive being written raw into an OSC sequence.
+        let mut m = Meter::default();
+        for _ in 0..30 {
+            m.record(
+                Duration::from_millis(20),
+                DrawStats {
+                    cells_damaged: 10,
+                    bytes: 500,
+                },
+                1000,
+            );
+        }
+        let t = m.title();
+        assert!(t.starts_with("rmatrix"));
+        assert!(t.contains("fps"), "{t}");
+        assert!(
+            !t.chars().any(char::is_control),
+            "title had a control char: {t:?}"
+        );
+
+        let mut buf = Vec::new();
+        set_title(&mut buf, "evil\x07title\x1b[0m").expect("writing to a Vec cannot fail");
+        assert_eq!(
+            buf, b"\x1b]2;eviltitle[0m\x07",
+            "control chars leaked into the OSC"
         );
     }
 

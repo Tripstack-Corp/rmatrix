@@ -78,8 +78,14 @@ rmatrix --seed 1337                         # same rain every time
 
 ## Performance
 
-Press `f` for a live overlay: frame rate, bytes per frame, output rate, and the
-percentage of cells repainted.
+Press `f` for a live readout: frame rate, bytes per frame, output rate, and the
+percentage of cells repainted. It appears in two places — a bar across the top
+row, **and the window title**.
+
+The title is not redundant. If you pair `-c ascii` with a font that remaps ASCII
+to glyphs (see [Fonts](#fonts)), anything drawn into the terminal grid is remapped
+too, so the on-screen bar comes out as Matrix glyphs. The title is rendered by
+the OS in the UI font, so it stays readable whatever the terminal font is doing.
 
 The thing to understand about a full-screen terminal animation is that **you are
 not the expensive process — the terminal is.** Measured on an M4 Pro at 200×50,
