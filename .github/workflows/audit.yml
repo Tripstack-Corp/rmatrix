@@ -1,0 +1,48 @@
+name: Audit
+
+# The lockfile is clean today. This job exists so that someone finds out when
+# that stops being true, rather than a user finding out — nothing else in the
+# pipeline looks at the advisory database, and a dependency does not have to
+# change for an advisory against it to appear.
+on:
+  schedule:
+    # Monday morning UTC: an advisory filed over the weekend is waiting at the
+    # start of the week rather than sitting until the next push.
+    - cron: "0 7 * * 1"
+  push:
+    branches: [main]
+    paths:
+      - "Cargo.lock"
+      - ".github/workflows/audit.yml"
+  workflow_dispatch:
+
+# Read-only on purpose. cargo-audit is run for its exit code and nothing else:
+# a failing job is the notification, so this needs no permission to open issues
+# or write anything back to the repository.
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  audit:
+    name: cargo audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+
+      - name: Install Rust
+        run: rustup toolchain install stable --profile minimal
+
+      # Installed directly rather than via an action: the actions that wrap
+      # cargo-audit want `issues: write` so they can file their findings, and a
+      # red check is notification enough for a project this size.
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked
+
+      # --deny warnings promotes unmaintained, unsound and yanked crates from
+      # warnings to failures. Without it the job only fails on advisories with a
+      # vulnerability entry, which is a narrower thing than "something in this
+      # lockfile now needs attention".
+      - run: cargo audit --deny warnings
