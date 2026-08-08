@@ -278,16 +278,37 @@ impl Rain {
         }
     }
 
-    /// The glyph and colour to draw at `(x, y)`, or `None` if the cell is dark.
+    /// Everything the renderer needs about one cell, in a single lookup:
+    /// what to draw, and how much the eye cares about it.
     #[must_use]
-    pub fn color_of(&self, x: u16, y: u16, theme: &Theme) -> Option<(char, Rgb)> {
+    pub fn sample(&self, x: u16, y: u16, theme: &Theme) -> Option<Sample> {
         let c = self.cell(x, y)?;
         if c.glow <= 0.0 {
             return None;
         }
         let hue = self.cols.get(x as usize).map_or(0.0, |c| c.hue) + self.elapsed * 0.08;
-        Some((c.ch, theme.color(c.glow, c.head, hue)))
+        Some(Sample {
+            ch: c.ch,
+            rgb: theme.color(c.glow, c.head, hue),
+            head: c.head,
+        })
     }
+
+    /// The glyph and colour to draw at `(x, y)`, or `None` if the cell is dark.
+    #[must_use]
+    pub fn color_of(&self, x: u16, y: u16, theme: &Theme) -> Option<(char, Rgb)> {
+        self.sample(x, y, theme).map(|s| (s.ch, s.rgb))
+    }
+}
+
+/// One cell as the renderer sees it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Sample {
+    pub ch: char,
+    pub rgb: Rgb,
+    /// Leading glyph of a drop: the brightest thing on screen and the only part
+    /// that moves every frame, so it is what the eye tracks.
+    pub head: bool,
 }
 
 fn pick(rng: &mut StdRng, glyphs: &[char]) -> char {

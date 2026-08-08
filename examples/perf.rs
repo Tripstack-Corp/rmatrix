@@ -86,6 +86,79 @@ fn main() {
     breakdown();
     println!();
     ab();
+    println!();
+    budget_sweep();
+}
+
+/// What a per-frame byte budget does to the *shape* of the output, not just its
+/// mean. The mean is not the point — the worst frame is.
+fn budget_sweep() {
+    let (w, h) = (204u16, 175u16);
+    println!("fixed byte budget at {w}x{h}, 600 frames at 30 fps:");
+    println!(
+        "{:>10} {:>9} {:>9} {:>8} {:>8} {:>8} {:>7} {:>7}",
+        "budget", "mean B/f", "p99 B/f", "max B/f", "dmg/f", "drawn/f", "held%", "late%"
+    );
+
+    for budget in [
+        None,
+        Some(60_000),
+        Some(45_000),
+        Some(30_000),
+        Some(20_000),
+        Some(12_000),
+        Some(6_000),
+    ] {
+        let mut rain = Rain::new(
+            w,
+            h,
+            Config {
+                seed: Some(1),
+                ..Config::default()
+            },
+        );
+        let theme = Theme::from_base((0, 255, 65), false);
+        let mut rr = Renderer::new(w, h);
+        rr.set_budget(budget);
+        for _ in 0..warmup_frames(h) {
+            rain.step(DT);
+        }
+        let mut sink = Vec::with_capacity(1 << 23);
+        let _ = rr.draw(&mut sink, &rain, &theme, Depth::True);
+        // Settle the budget's own steady state before measuring it.
+        for _ in 0..120 {
+            rain.step(1.0 / 30.0);
+            sink.clear();
+            let _ = rr.draw(&mut sink, &rain, &theme, Depth::True);
+        }
+
+        let mut per_frame = Vec::with_capacity(FRAMES);
+        let (mut dmg, mut drawn, mut forced) = (0usize, 0usize, 0usize);
+        for _ in 0..FRAMES {
+            rain.step(1.0 / 30.0);
+            sink.clear();
+            if let Ok(s) = rr.draw(&mut sink, &rain, &theme, Depth::True) {
+                per_frame.push(s.bytes);
+                dmg += s.cells_damaged;
+                drawn += s.cells_drawn;
+                forced += s.cells_forced;
+            }
+        }
+        per_frame.sort_unstable();
+        let pct = |p: f64| per_frame[((per_frame.len() - 1) as f64 * p) as usize];
+        let n = FRAMES as f64;
+        println!(
+            "{:>10} {:>9.0} {:>9} {:>8} {:>8.0} {:>8.0} {:>6.0}% {:>6.0}%",
+            budget.map_or("none".to_string(), |b| b.to_string()),
+            per_frame.iter().sum::<usize>() as f64 / n,
+            pct(0.99),
+            per_frame[per_frame.len() - 1],
+            dmg as f64 / n,
+            drawn as f64 / n,
+            (dmg - drawn) as f64 / dmg as f64 * 100.0,
+            forced as f64 / drawn as f64 * 100.0,
+        );
+    }
 }
 
 /// `levels = 0` is the unquantised ramp, i.e. the original behaviour.

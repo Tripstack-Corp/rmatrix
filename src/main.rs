@@ -15,7 +15,7 @@ use crossterm::terminal::{
     LeaveAlternateScreen,
 };
 use crossterm::{ExecutableCommand, QueueableCommand, cursor};
-use rmatrix::{BaseColor, Charset, Config, Depth, DrawStats, Rain, Renderer, Theme};
+use rmatrix::{BaseColor, Charset, Config, Depth, DrawStats, Governor, Rain, Renderer, Theme};
 use std::io::{Write, stdout};
 use std::process::ExitCode;
 use std::str::FromStr;
@@ -90,6 +90,43 @@ struct Args {
     /// Force colour depth instead of detecting it
     #[arg(long, value_parser = ["auto", "truecolor", "256", "16"], default_value = "auto")]
     color_depth: String,
+
+    /// Cap on bytes emitted per frame: `auto` tracks how fast the terminal is
+    /// actually draining, `off` removes the cap, or give a byte count. When the
+    /// cap bites, the brightest and most-changed cells are drawn first and the
+    /// dim tail is deferred to a later frame — never dropped.
+    #[arg(long, default_value = "auto")]
+    budget: String,
+}
+
+/// How the per-frame byte cap is chosen.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum BudgetMode {
+    Off,
+    Auto,
+    Fixed(usize),
+}
+
+impl FromStr for BudgetMode {
+    type Err = String;
+    fn from_str(s: &str) -> Result<BudgetMode, String> {
+        match s {
+            "off" | "none" => Ok(BudgetMode::Off),
+            "auto" => Ok(BudgetMode::Auto),
+            other => other
+                .parse::<usize>()
+                .map_err(|_| format!("expected `auto`, `off`, or a byte count, got {other:?}"))
+                .and_then(|n| {
+                    if n >= 512 {
+                        Ok(BudgetMode::Fixed(n))
+                    } else {
+                        Err(format!(
+                            "a fixed budget below 512 bytes is useless, got {n}"
+                        ))
+                    }
+                }),
+        }
+    }
 }
 
 /// Charsets reachable with the `c` key, in order.
@@ -110,6 +147,7 @@ struct Settings {
     depth: Depth,
     config: Config,
     frame: Duration,
+    budget: BudgetMode,
 }
 
 fn main() -> ExitCode {
@@ -165,6 +203,10 @@ fn validate(args: &Args) -> Result<Settings> {
         bail!("--charset custom needs --custom <GLYPHS>");
     }
 
+    let budget = BudgetMode::from_str(&args.budget)
+        .map_err(anyhow::Error::msg)
+        .context("invalid --budget")?;
+
     let depth = match args.color_depth.as_str() {
         "truecolor" => Depth::True,
         "256" => Depth::Ansi256,
@@ -186,6 +228,7 @@ fn validate(args: &Args) -> Result<Settings> {
             seed: args.seed,
         },
         frame: Duration::from_secs_f64(1.0 / f64::from(args.fps.clamp(1, 240))),
+        budget,
     })
 }
 
@@ -199,9 +242,12 @@ struct Meter {
     window: Duration,
     bytes: usize,
     damaged: usize,
+    deferred: usize,
     fps: f32,
     bytes_per_frame: f32,
     damage_pct: f32,
+    /// Share of damaged cells the budget held back for a later frame.
+    deferred_pct: f32,
 }
 
 impl Meter {
@@ -212,6 +258,7 @@ impl Meter {
         self.window += dt;
         self.bytes += stats.bytes;
         self.damaged += stats.cells_damaged;
+        self.deferred += stats.cells_deferred();
         // Re-average about twice a second: often enough to feel live, rarely
         // enough that the digits stay readable.
         if self.window >= Duration::from_millis(500) {
@@ -223,10 +270,16 @@ impl Meter {
             } else {
                 self.damaged as f32 / (self.frames as usize * cells) as f32 * 100.0
             };
+            self.deferred_pct = if self.damaged == 0 {
+                0.0
+            } else {
+                self.deferred as f32 / self.damaged as f32 * 100.0
+            };
             *self = Meter {
                 fps: self.fps,
                 bytes_per_frame: self.bytes_per_frame,
                 damage_pct: self.damage_pct,
+                deferred_pct: self.deferred_pct,
                 ..Meter::default()
             };
             return true;
@@ -236,11 +289,12 @@ impl Meter {
 
     fn line(&self) -> String {
         format!(
-            " {:.0} fps · {:.1} KB/frame · {:.2} MB/s · {:.1}% cells · q quit ",
+            " {:.0} fps · {:.1} KB/frame · {:.2} MB/s · {:.1}% cells · {:.0}% held · q quit ",
             self.fps,
             self.bytes_per_frame / 1024.0,
             self.bytes_per_frame * self.fps / 1.0e6,
             self.damage_pct,
+            self.deferred_pct,
         )
     }
 
@@ -252,11 +306,12 @@ impl Meter {
     /// with Matrix Code NFI.
     fn title(&self) -> String {
         format!(
-            "rmatrix — {:.0} fps · {:.1} KB/frame · {:.2} MB/s · {:.1}% cells",
+            "rmatrix — {:.0} fps · {:.1} KB/frame · {:.2} MB/s · {:.1}% cells · {:.0}% held",
             self.fps,
             self.bytes_per_frame / 1024.0,
             self.bytes_per_frame * self.fps / 1.0e6,
             self.damage_pct,
+            self.deferred_pct,
         )
     }
 }
@@ -333,6 +388,12 @@ fn run(args: &Args, s: Settings) -> Result<()> {
     let mut bold = args.bold;
     let mut rain = Rain::new(w, h, s.config);
     let mut renderer = Renderer::new(w, h);
+    let mut governor = Governor::new(w as usize * h as usize);
+    renderer.set_budget(match s.budget {
+        BudgetMode::Off => None,
+        BudgetMode::Auto => Some(governor.budget()),
+        BudgetMode::Fixed(n) => Some(n),
+    });
 
     let mut out = std::io::BufWriter::with_capacity(1 << 18, stdout());
     let mut last = Instant::now();
@@ -399,6 +460,7 @@ fn run(args: &Args, s: Settings) -> Result<()> {
                     h = nh.max(1);
                     rain.resize(w, h);
                     renderer.resize(w, h);
+                    governor.resize(w as usize * h as usize);
                     out.write_all(b"\x1b[2J")?;
                 }
                 _ => {}
@@ -413,7 +475,16 @@ fn run(args: &Args, s: Settings) -> Result<()> {
         if !paused {
             rain.step(dt);
         }
+        // `draw` ends in a blocking flush, so this interval *is* how long the
+        // terminal made us wait — the only direct measurement we get of how
+        // fast it can drain, and what the auto budget is derived from.
+        let write_start = Instant::now();
         let stats = renderer.draw(&mut out, &rain, &theme, s.depth)?;
+        let write_took = write_start.elapsed();
+        if s.budget == BudgetMode::Auto {
+            governor.observe(stats.bytes, write_took, s.frame);
+            renderer.set_budget(Some(governor.budget()));
+        }
         let refreshed = meter.record(now - last_frame, stats, w as usize * h as usize);
         last_frame = now;
 
@@ -583,12 +654,41 @@ mod tests {
 
     #[test]
     fn perf_defaults_favour_the_terminal() {
-        // These two defaults exist to keep output volume down; if someone raises
+        // These defaults exist to keep output volume down; if someone raises
         // them casually, this test should make them think about it first.
         let a = args();
         assert_eq!(a.fps, 30, "fps default drives output volume linearly");
         assert_eq!(a.levels, rmatrix::DEFAULT_LEVELS);
         assert!(!a.stats, "the overlay should be opt-in");
+        assert_eq!(
+            validate(&a).expect("valid").budget,
+            BudgetMode::Auto,
+            "the per-frame cap must be on by default — it costs nothing when the \
+             terminal keeps up, and it is the difference between 30 fps and 8 \
+             when it does not"
+        );
+    }
+
+    #[test]
+    fn budget_modes_parse() {
+        for (s, want) in [
+            ("auto", BudgetMode::Auto),
+            ("off", BudgetMode::Off),
+            ("none", BudgetMode::Off),
+            ("40000", BudgetMode::Fixed(40_000)),
+        ] {
+            let a = Args::parse_from(["rmatrix", "--budget", s]);
+            assert_eq!(validate(&a).expect("valid").budget, want, "--budget {s}");
+        }
+        for s in ["bogus", "-5", "1.5", "10", ""] {
+            // `=` form: clap would read a bare `-5` as a flag.
+            let a = Args::parse_from(["rmatrix", &format!("--budget={s}")]);
+            let e = validate(&a).expect_err("should reject");
+            assert!(
+                format!("{e:#}").contains("--budget"),
+                "error lost its context: {e:#}"
+            );
+        }
     }
 
     #[test]
@@ -611,7 +711,9 @@ mod tests {
             Duration::from_millis(10),
             DrawStats {
                 cells_damaged: 5,
+                cells_drawn: 5,
                 bytes: 100,
+                ..DrawStats::default()
             },
             1000,
         );
@@ -628,7 +730,9 @@ mod tests {
                 Duration::from_secs_f64(1.0 / 30.0),
                 DrawStats {
                     cells_damaged: 100,
+                    cells_drawn: 100,
                     bytes: 2048,
+                    ..DrawStats::default()
                 },
                 1000,
             );
@@ -664,7 +768,9 @@ mod tests {
                 Duration::from_millis(20),
                 DrawStats {
                     cells_damaged: 10,
+                    cells_drawn: 10,
                     bytes: 500,
+                    ..DrawStats::default()
                 },
                 1000,
             );

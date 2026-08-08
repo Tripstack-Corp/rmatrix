@@ -62,6 +62,7 @@ rmatrix [OPTIONS]
   -s, --screensaver        Exit on any keypress
       --seed <N>           Replay a specific animation
       --color-depth <D>    auto | truecolor | 256 | 16         [default: auto]
+      --budget <B>         Bytes per frame: auto | off | <N>   [default: auto]
 ```
 
 Keys while running: `q`/`Esc`/`Ctrl-C` quit, `space` pause, `1`–`9` speed,
@@ -109,6 +110,50 @@ So the tuning knobs are all about emitting fewer bytes:
 | `--levels <N>` | Brightness steps. A cell only repaints when it crosses a step, so this is the biggest lever. `8` is ~4.2× less output than unquantised, and still nearly 3× cmatrix's three levels. |
 | `--fps <N>` | Output scales linearly. |
 | `-d`, `--tail-max` | Fewer/shorter trails means fewer lit cells. |
+| `--budget <B>` | Caps bytes per frame so the terminal is never handed more than it can take. On by default; see below. |
+
+### The frame budget
+
+The knobs above shrink the *average*. What you actually see as jank is the
+*worst* frame: when rmatrix hands the terminal more than it can swallow, the
+write blocks, the frame overruns, and — because the simulation is integrated
+against real elapsed time — the next frame has a bigger `dt` and so even more to
+draw. It is a feedback loop, and it ends with the drops teleporting down the
+screen instead of falling.
+
+`--budget` breaks the loop by capping what one frame may emit. When the cap
+bites, damaged cells are drawn in order of how much you would miss them: drop
+heads first, then large brightness changes, then bright cells, and last the dim
+tail and glyph churn. Whatever does not fit is *deferred*, not dropped — it stays
+damaged and is drawn in a later frame, and no cell is ever more than 8 frames
+behind.
+
+`auto` (the default) watches how long each blocking write took and settles the
+cap where writes take about 60% of the frame. It costs nothing on a terminal that
+keeps up: with headroom it imposes no cap and the output is byte-for-byte what it
+always was. Use `--budget off` to disable it, or give a byte count to pin it.
+
+Measured at 204×175 against a pty drained at a fixed rate, 30 fps target
+(33.3 ms), median of 7 interleaved 10-second runs. Steady-state demand here is
+2.3 MB/s, so every row below is a terminal that cannot quite keep up:
+
+| Consumer | | frame p50 | p95 | p99 | max | worst frame |
+|---|---|---|---|---|---|---|
+| 2.0 MB/s | `--budget off` | 46.1 ms | 48.4 | 49.5 | 50.1 | 98.8 KB |
+| | `--budget auto` | **33.3 ms** | **35.9** | **36.9** | **38.7** | **69.0 KB** |
+| 1.5 MB/s | `--budget off` | 73.9 ms | 77.8 | 79.3 | 80.8 | 118.7 KB |
+| | `--budget auto` | **33.3 ms** | **36.1** | **37.5** | **37.5** | **52.1 KB** |
+| 1.0 MB/s | `--budget off` | 123.0 ms | 128.9 | 132.0 | 134.9 | 129.2 KB |
+| | `--budget auto` | **33.3 ms** | **36.2** | **46.4** | **37.9** | **34.8 KB** |
+
+At 1.0 MB/s the unbudgeted loop misses its `dt` clamp on 298 of 300 frames —
+every single frame teleports the drops. Budgeted, one frame does.
+
+The reason a cap can *reduce* total output rather than just reshape it: a
+deferred cell that changes again before it is drawn only costs one emission. Held
+back for a few frames, a dim tail cell collapses several brightness steps into a
+single repaint — which is exactly what `--levels` does, except applied only to
+the cells nobody is looking at, and only while the terminal is struggling.
 
 Measured at 200×50, 600 frames per row:
 

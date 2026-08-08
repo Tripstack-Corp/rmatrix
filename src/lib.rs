@@ -14,6 +14,6 @@ pub mod render;
 pub mod theme;
 
 pub use charset::Charset;
-pub use rain::{Config, Rain};
-pub use render::{DEFAULT_COLOR_TOLERANCE, DrawStats, Renderer};
+pub use rain::{Config, Rain, Sample};
+pub use render::{DEFAULT_COLOR_TOLERANCE, DrawStats, Governor, MAX_DEFER, Renderer};
 pub use theme::{BaseColor, DEFAULT_LEVELS, Depth, Rgb, Theme};
