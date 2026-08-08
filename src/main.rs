@@ -15,7 +15,10 @@ use crossterm::terminal::{
     LeaveAlternateScreen,
 };
 use crossterm::{ExecutableCommand, QueueableCommand, cursor};
-use rmatrix::{BaseColor, Charset, Config, Depth, DrawStats, Rain, Renderer, Theme};
+use rmatrix::{
+    Backpressure, BaseColor, Charset, Config, Depth, DrawStats, Governor, GovernorConfig, Rain,
+    Renderer, Theme,
+};
 use std::io::{Write, stdout};
 use std::process::ExitCode;
 use std::str::FromStr;
@@ -58,6 +61,16 @@ struct Args {
     /// Start with the stats overlay visible (toggle with `f`)
     #[arg(long)]
     stats: bool,
+
+    /// Keep full quality even when the terminal cannot keep up.
+    ///
+    /// By default rmatrix watches how long it spends blocked writing to the
+    /// terminal and, when that starts eating the frame budget, quietly widens
+    /// the threshold at which a cell is worth repainting — trading a fraction
+    /// of a brightness step for smoothness, and giving it back as soon as the
+    /// machine is idle again.
+    #[arg(long)]
+    no_adapt: bool,
 
     /// Fraction of columns raining at any moment (0.0-1.0)
     #[arg(short = 'd', long, default_value_t = 0.55)]
@@ -202,6 +215,10 @@ struct Meter {
     fps: f32,
     bytes_per_frame: f32,
     damage_pct: f32,
+    /// Quality the governor is currently holding back, in brightness steps.
+    /// Set directly by the loop rather than averaged — it moves slowly enough
+    /// to read as-is.
+    shed: f32,
 }
 
 impl Meter {
@@ -227,6 +244,7 @@ impl Meter {
                 fps: self.fps,
                 bytes_per_frame: self.bytes_per_frame,
                 damage_pct: self.damage_pct,
+                shed: self.shed,
                 ..Meter::default()
             };
             return true;
@@ -236,12 +254,23 @@ impl Meter {
 
     fn line(&self) -> String {
         format!(
-            " {:.0} fps · {:.1} KB/frame · {:.2} MB/s · {:.1}% cells · q quit ",
+            " {:.0} fps · {:.1} KB/frame · {:.2} MB/s · {:.1}% cells{} · q quit ",
             self.fps,
             self.bytes_per_frame / 1024.0,
             self.bytes_per_frame * self.fps / 1.0e6,
             self.damage_pct,
+            self.shed_note(),
         )
+    }
+
+    /// Only mentioned once the governor has actually taken something, so an
+    /// untroubled run reads exactly as it did before.
+    fn shed_note(&self) -> String {
+        if self.shed >= 0.05 {
+            format!(" · -{:.1} step", self.shed)
+        } else {
+            String::new()
+        }
     }
 
     /// Same figures, for the window title.
@@ -252,11 +281,12 @@ impl Meter {
     /// with Matrix Code NFI.
     fn title(&self) -> String {
         format!(
-            "rmatrix — {:.0} fps · {:.1} KB/frame · {:.2} MB/s · {:.1}% cells",
+            "rmatrix — {:.0} fps · {:.1} KB/frame · {:.2} MB/s · {:.1}% cells{}",
             self.fps,
             self.bytes_per_frame / 1024.0,
             self.bytes_per_frame * self.fps / 1.0e6,
             self.damage_pct,
+            self.shed_note(),
         )
     }
 }
@@ -334,7 +364,10 @@ fn run(args: &Args, s: Settings) -> Result<()> {
     let mut rain = Rain::new(w, h, s.config);
     let mut renderer = Renderer::new(w, h);
 
-    let mut out = std::io::BufWriter::with_capacity(1 << 18, stdout());
+    // `Backpressure` sits *under* the `BufWriter` so it only ever times real
+    // syscalls — which is to say, the terminal refusing to take more.
+    let mut out = std::io::BufWriter::with_capacity(1 << 18, Backpressure::new(stdout()));
+    let mut gov = Governor::new(theme.ramp_step(), GovernorConfig::default());
     let mut last = Instant::now();
     let mut last_frame = Instant::now();
     let mut paused = false;
@@ -413,8 +446,17 @@ fn run(args: &Args, s: Settings) -> Result<()> {
         if !paused {
             rain.step(dt);
         }
+        out.get_mut().reset();
         let stats = renderer.draw(&mut out, &rain, &theme, s.depth)?;
+        // Closed the loop: how long that draw spent blocked decides what the
+        // next one is allowed to cost. Reading it before the overlay writes
+        // keeps the measurement about the rain and nothing else.
+        if !args.no_adapt {
+            let q = gov.observe(out.get_mut().elapsed(), s.frame);
+            renderer.set_redraw_tolerance(q.redraw_tolerance);
+        }
         let refreshed = meter.record(now - last_frame, stats, w as usize * h as usize);
+        meter.shed = gov.steps_shed();
         last_frame = now;
 
         if show_stats {
@@ -682,6 +724,38 @@ mod tests {
         assert_eq!(
             buf, b"\x1b]2;eviltitle[0m\x07",
             "control chars leaked into the OSC"
+        );
+    }
+
+    #[test]
+    fn adapting_is_the_default_and_can_be_turned_off() {
+        // The complaint was "I'd like it to dynamically adjust", so this is not
+        // something the user should have to find and switch on.
+        assert!(!args().no_adapt, "adaptive quality should be on by default");
+        assert!(Args::parse_from(["rmatrix", "--no-adapt"]).no_adapt);
+    }
+
+    #[test]
+    fn the_readout_stays_quiet_until_quality_is_actually_shed() {
+        let mut m = Meter::default();
+        for _ in 0..30 {
+            m.record(
+                Duration::from_millis(33),
+                DrawStats {
+                    cells_damaged: 10,
+                    bytes: 500,
+                },
+                1000,
+            );
+        }
+        assert!(!m.line().contains("step"), "{}", m.line());
+        assert!(!m.title().contains("step"));
+        m.shed = 2.4;
+        assert!(m.line().contains("-2.4 step"), "{}", m.line());
+        assert!(m.title().contains("-2.4 step"));
+        assert!(
+            !m.title().chars().any(char::is_control),
+            "the note broke the OSC title"
         );
     }
 

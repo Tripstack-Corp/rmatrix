@@ -43,11 +43,13 @@ impl<W: Write> Write for Counting<W> {
 pub const DEFAULT_COLOR_TOLERANCE: u16 = 12;
 
 pub struct Renderer {
+    /// The colour last committed for each cell — see `redraw_tolerance`.
     prev: Vec<Option<(char, Color)>>,
     w: u16,
     h: u16,
     cur_color: Option<Color>,
     tolerance: u16,
+    redraw_tolerance: u16,
     /// Where the terminal cursor sits after the last write, if known.
     at: Option<(u16, u16)>,
 }
@@ -75,6 +77,20 @@ fn within(a: Color, b: Color, tol: u16) -> bool {
     }
 }
 
+/// Is the colour already committed for this cell close enough to what we now
+/// want?
+///
+/// The glyph must match exactly — a wrong character is not a shade of grey —
+/// but the colour only has to be within `tol`. At `tol` 0 this is plain
+/// equality, i.e. exact damage tracking.
+fn settled(committed: Option<(char, Color)>, want: Option<(char, Color)>, tol: u16) -> bool {
+    match (committed, want) {
+        (None, None) => true,
+        (Some((a, ac)), Some((b, bc))) => a == b && within(ac, bc, tol),
+        _ => false,
+    }
+}
+
 impl Renderer {
     #[must_use]
     pub fn new(w: u16, h: u16) -> Renderer {
@@ -84,6 +100,7 @@ impl Renderer {
             h,
             cur_color: None,
             tolerance: DEFAULT_COLOR_TOLERANCE,
+            redraw_tolerance: 0,
             at: None,
         }
     }
@@ -91,6 +108,21 @@ impl Renderer {
     /// 0 re-sets the pen for any colour change at all.
     pub fn set_color_tolerance(&mut self, tolerance: u16) {
         self.tolerance = tolerance;
+    }
+
+    /// How far a cell's ideal colour may drift from what is *already on screen*
+    /// before we bother repainting it, summed across R+G+B.
+    ///
+    /// This is the adaptive-quality knob. Unlike [`Theme::levels`], raising it
+    /// costs nothing on the frame it changes: the comparison is against the
+    /// screen's real state, so a cell that is already close enough simply stops
+    /// generating damage, and lowering it lets cells catch up as they next move.
+    /// Error cannot accumulate — every cell stays within this of its ideal, not
+    /// of its own previous error. 0 reproduces exact damage tracking.
+    ///
+    /// [`Theme::levels`]: crate::theme::Theme::levels
+    pub fn set_redraw_tolerance(&mut self, tolerance: u16) {
+        self.redraw_tolerance = tolerance;
     }
 
     /// Call after anything else writes to the screen (an overlay, say). The
@@ -139,7 +171,12 @@ impl Renderer {
                 let Some(slot) = self.prev.get_mut(idx) else {
                     continue;
                 };
-                if *slot == want {
+                // A cell whose ideal colour has not drifted `redraw_tolerance`
+                // from the one we last committed to is left alone: repainting
+                // costs a cursor move, an SGR and a glyph, and at small deltas
+                // nobody can tell. At tolerance 0 this is plain equality, i.e.
+                // exactly the damage tracking we have always done.
+                if settled(*slot, want, self.redraw_tolerance) {
                     continue;
                 }
                 *slot = want;

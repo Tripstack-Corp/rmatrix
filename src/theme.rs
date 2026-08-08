@@ -118,6 +118,24 @@ impl Theme {
         lerp(dim, bright, self.quantise(t.powf(1.7)))
     }
 
+    /// Manhattan RGB distance between two adjacent steps of the ramp.
+    ///
+    /// The unit the quality governor works in: a drift budget of "one step" is
+    /// the same visual concession whether the ramp is fine or coarse, bright or
+    /// dim, where a raw RGB budget would not be.
+    #[must_use]
+    pub fn ramp_step(&self) -> f32 {
+        let span = u16::from(self.bright.0.abs_diff(self.dim.0))
+            + u16::from(self.bright.1.abs_diff(self.dim.1))
+            + u16::from(self.bright.2.abs_diff(self.dim.2));
+        let n = if self.levels == 0 {
+            DEFAULT_LEVELS
+        } else {
+            self.levels
+        };
+        f32::from(span) / f32::from(n)
+    }
+
     /// Snap to the nearest of `levels` steps. Holding a cell's colour steady
     /// across frames is what stops it generating damage every single frame.
     fn quantise(&self, t: f32) -> f32 {

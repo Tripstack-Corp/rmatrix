@@ -9,11 +9,13 @@
 //! thread-local generator, so a given seed replays a bit-identical animation.
 
 pub mod charset;
+pub mod governor;
 pub mod rain;
 pub mod render;
 pub mod theme;
 
 pub use charset::Charset;
+pub use governor::{Backpressure, Governor, GovernorConfig, Quality};
 pub use rain::{Config, Rain};
 pub use render::{DEFAULT_COLOR_TOLERANCE, DrawStats, Renderer};
 pub use theme::{BaseColor, DEFAULT_LEVELS, Depth, Rgb, Theme};

@@ -121,7 +121,26 @@ Measured at 200×50, 600 frames per row:
 | 16 | 12,015 | 0.36 MB/s | 5.8% | 2.63× |
 | 8 | 7,461 | 0.22 MB/s | 3.8% | 4.23× |
 
+### When the machine gets busy
+
+rmatrix watches how long each frame spends *blocked writing to the terminal* —
+which is what actually happens when the emulator falls behind — and, when that
+starts eating the frame budget, quietly widens the threshold at which a cell is
+worth repainting. A cell whose colour has barely moved is left alone for another
+frame or two. It gives the quality back as soon as the machine is idle again.
+
+This costs nothing you can point at: the number of brightness levels on screen
+does not change, because quantisation is untouched. Measured at 204×175 against
+a terminal draining 1.6 MB/s with all fourteen cores busy, frame time went from
+p50 68 ms / p95 136 ms to p50 39 ms / p95 66 ms.
+
+Pass `--no-adapt` to switch it off and hold full quality no matter what.
+
 ### Recommended settings
+
+The settings below still matter — the governor buys headroom, it does not create
+it, and it is better to start inside the terminal's budget than to be pulled back
+into it.
 
 `--levels` defaults to 24, which is right for an ordinary window and deliberately
 conservative. The larger your terminal, the more it pays to turn it down — and
