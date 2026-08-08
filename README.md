@@ -2,6 +2,10 @@
 
 Digital rain for modern terminals. Written in Rust, no ncurses.
 
+[![crates.io](https://img.shields.io/crates/v/rmatrix-reloaded.svg)](https://crates.io/crates/rmatrix-reloaded)
+[![CI](https://github.com/Tripstack-Corp/rmatrix/actions/workflows/ci.yml/badge.svg)](https://github.com/Tripstack-Corp/rmatrix/actions/workflows/ci.yml)
+[![license](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 ```sh
 rmatrix
 ```
@@ -57,11 +61,18 @@ shasum -a 256 -c SHA256SUMS --ignore-missing
 ### With cargo
 
 ```sh
-cargo install --git https://github.com/Tripstack-Corp/rmatrix
+cargo install rmatrix-reloaded
 ```
 
-> Don't `cargo install rmatrix` from crates.io — that name belongs to an
-> unrelated project.
+> The crate is `rmatrix-reloaded` because `rmatrix` on crates.io is an unrelated
+> project — so `cargo install rmatrix` gets you something else. The installed
+> command is still `rmatrix`.
+
+For the rolling `main` rather than the latest release:
+
+```sh
+cargo install --git https://github.com/Tripstack-Corp/rmatrix
+```
 
 ### From a clone
 
