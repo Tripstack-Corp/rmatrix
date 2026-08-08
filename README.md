@@ -137,6 +137,27 @@ shift `131072`, control `262144`, option `524288`, command `1048576` — so
 ⌃⌥⌘ is `1835008`. The key names above are the ones iTerm2 actually reads; note
 it is `Has Hotkey`, not "Has Hotkey Window".
 
+### The other kind of shortcut
+
+iTerm2 has a second, unrelated binding — the per-profile `Shortcut`, which is
+what fills the *Shortcut* column in the Profiles window:
+
+```json
+"Shortcut": "R"
+```
+
+That gives **⌃⌘R** to open the profile in a new tab, and **⌃⌥⌘R** to open it in
+a new window. Two things worth knowing:
+
+- The base modifier is control-command, *not* option-command.
+- A single `Shortcut` claims **both** chords, because option is what switches it
+  from tab to window. So `"Shortcut": "M"` alongside a ⌃⌥⌘M hotkey window is a
+  silent conflict — pick letters that don't overlap.
+
+The difference in practice: `Has Hotkey` is global and toggles, and works when
+iTerm2 isn't focused; `Shortcut` only fires when iTerm2 is frontmost and always
+opens something new.
+
 Pair it with the movie font by using an absolute path to the binary, setting
 `"Normal Font": "MatrixCodeNFI 14"`, and adding `-c ascii` to the command (see
 [Fonts](#fonts) for why).
