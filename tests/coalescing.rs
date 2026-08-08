@@ -12,6 +12,11 @@
 //! going permanently wrong, which is both the hazard being avoided and proof
 //! that these assertions have teeth.
 
+// The crate denies these; clippy's `allow-expect-in-tests` only reaches
+// `#[cfg(test)]` modules, and an integration test is its own crate. The rule
+// they enforce is about production code paths, and none of this is one.
+#![allow(clippy::expect_used, clippy::unwrap_used)]
+
 use rmatrix::{Config, Depth, Rain, Renderer, Rgb, Theme};
 
 /// The subset of a terminal the renderer actually drives: absolute and relative

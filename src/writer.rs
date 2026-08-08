@@ -113,6 +113,14 @@ impl FrameWriter {
         // Detached on purpose: the handle is dropped, so teardown never *joins*
         // a thread that might be parked inside a blocking write. It cannot
         // outlive us either — returning from `main` tears the process down.
+        #[allow(
+            clippy::expect_used,
+            reason = "the only sanctioned panic outside tests: spawn fails when \
+                      the OS is out of threads, and there is no useful degraded \
+                      mode — without a writer nothing can reach the terminal, \
+                      and returning an error here would only push the same \
+                      abort one frame later with the screen already cleared"
+        )]
         std::thread::Builder::new()
             .name("rmatrix-writer".into())
             .spawn(move || pump(out, &rx, &ret_tx, &done_tx, &thread_abort))

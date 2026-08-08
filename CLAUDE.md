@@ -40,8 +40,15 @@ cargo clippy --all-targets -- -D warnings
 cargo fmt --check
 ```
 
-No `unwrap` or `expect` outside tests. The writer-thread spawn in `writer.rs` is
-the single sanctioned exception and it says why in a comment.
+No `unwrap` or `expect` outside tests — `[lints.clippy]` in `Cargo.toml` denies
+both, so this is a build failure, not a review note. `clippy.toml` exempts
+`#[cfg(test)]` modules; integration tests under `tests/` are separate crates
+that clippy does not count as test code, so they carry a crate-level allow. The
+writer-thread spawn in `writer.rs` is the single sanctioned exception in
+production code and carries its own `#[allow]` with a `reason`.
+
+If you need a new exemption, write the `reason` first. If you cannot finish the
+sentence, you want `?` instead.
 
 No new dependencies without a real argument. No `unsafe`. The crate has neither
 and that is a feature.

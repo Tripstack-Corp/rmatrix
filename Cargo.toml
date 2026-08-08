@@ -32,6 +32,15 @@ crossterm = "0.29.0"
 rand = "0.10.2"
 thiserror = "2.0.19"
 
+# "No unwrap or expect outside tests" was a rule enforced by review alone. This
+# makes it a build failure instead. Denied here rather than in a lint attribute
+# so it covers every target — library, binary, examples and tests — from one
+# place. Exemptions: clippy.toml lets tests through, and the single sanctioned
+# `expect` in writer.rs carries its own documented allow.
+[lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+
 [profile.release]
 lto = true
 codegen-units = 1

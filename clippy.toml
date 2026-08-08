@@ -1,0 +1,9 @@
+# `unwrap_used` and `expect_used` are denied in Cargo.toml's [lints.clippy].
+# Tests are exempt: a test that cannot get at its own fixture should fail loudly
+# on the spot, and threading Results through assertions buys nothing.
+#
+# This covers `#[cfg(test)]` modules only. Integration tests under tests/ are
+# separate crates that clippy does not treat as test code, so they carry their
+# own crate-level allow.
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
