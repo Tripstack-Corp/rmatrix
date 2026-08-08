@@ -32,14 +32,14 @@ jobs:
           - target: aarch64-unknown-linux-gnu
             os: ubuntu-24.04-arm
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           ref: ${{ github.event.inputs.tag || github.ref }}
 
       - name: Install Rust
         run: rustup toolchain install stable --profile minimal --target ${{ matrix.target }}
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           key: ${{ matrix.target }}
 
@@ -66,7 +66,7 @@ jobs:
           tar -czf "dist/${name}.tar.gz" -C dist "${name}"
           echo "archive=dist/${name}.tar.gz" >> "$GITHUB_OUTPUT"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: ${{ matrix.target }}
           path: dist/*.tar.gz
@@ -76,9 +76,9 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           path: dist
           merge-multiple: true
@@ -102,9 +102,26 @@ jobs:
         run: |
           set -euo pipefail
           tag="${{ github.event.inputs.tag || github.ref_name }}"
-          gh release create "$tag" \
-            --title "$tag" \
-            --generate-notes \
-            --verify-tag \
-            dist/* \
-          || gh release upload "$tag" dist/* --clobber
+
+          # Published artifacts are immutable. This step used to end in
+          # `|| gh release upload "$tag" dist/* --clobber`, which meant that
+          # re-running the workflow against an existing tag silently replaced
+          # the binaries *and* SHA256SUMS underneath anyone who had already
+          # downloaded and verified them. A release that has assets is
+          # finished; the only correct move is to bump the tag.
+          if assets=$(gh release view "$tag" --json assets --jq '.assets | length' 2>/dev/null); then
+            if [ "$assets" -ne 0 ]; then
+              echo "::error::release $tag already has $assets asset(s); published artifacts are immutable, so bump the version and tag again rather than replacing them"
+              exit 1
+            fi
+            # Created but empty: `gh release create` made the release and then
+            # died before the upload finished. Filling it in is not a rewrite.
+            echo "release $tag exists with no assets; completing the upload"
+            gh release upload "$tag" dist/*
+          else
+            gh release create "$tag" \
+              --title "$tag" \
+              --generate-notes \
+              --verify-tag \
+              dist/*
+          fi
