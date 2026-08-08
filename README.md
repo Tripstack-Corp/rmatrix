@@ -18,10 +18,11 @@ rmatrix targets what terminals can actually do now:
 
 | | cmatrix | rmatrix |
 |---|---|---|
-| Trail shading | 3 brightness steps | continuous 24-bit ramp (~170 levels of green in a typical frame) |
+| Trail shading | 3 brightness steps | a 24-bit ramp, 8–24 steps sized to your window (`--levels 0` for a fully continuous fade) |
 | Glyphs | ASCII, or katakana via `-c` | halfwidth katakana by default, 8 built-in sets, `--custom` |
 | Motion | fixed tick | rows/second, integrated against real time — same speed at any frame rate |
 | Redraw | full screen | damage-tracked; an unchanged frame emits zero bytes |
+| Under load | blocks the animation | writes are off the simulation thread; a slow terminal costs frames, never pacing |
 | Terminal layer | ncurses | crossterm — no system library to install |
 | Colour | 8 ANSI colours | any `#RRGGBB`, with automatic truecolor/256/16 fallback |
 | Reproducibility | — | `--seed` replays an identical animation |
