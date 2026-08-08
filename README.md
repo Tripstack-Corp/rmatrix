@@ -224,6 +224,45 @@ Every figure it produced was understated by roughly 1.7×. **If you benchmark a
 frame-rate-dependent animation, the step you simulate and the rate you divide by
 have to be the same number.**
 
+### When the terminal can't keep up
+
+Emitting fewer bytes is only half the problem. The other half is what happens
+when the emulator falls behind anyway — during a window reflow, a font reload, a
+Spaces switch, or just because the window is very large.
+
+A terminal that is behind stops draining the pty, the kernel buffer fills, and
+`write(2)` blocks. If that write is on the simulation thread, *everything* stops:
+the clock, input, the rain. When it unblocks, the next `dt` covers the whole
+stall, and rmatrix used to clamp `dt` at 0.1s — so the screen froze for 300 ms
+and then advanced 100 ms worth of rain. Freeze, lurch, freeze, lurch. That is
+what the jank was.
+
+So the frame path never touches a file descriptor. The renderer draws into a
+`Vec<u8>`, which cannot block, and a writer thread owns stdout. While that thread
+is busy, the loop keeps simulating and simply **doesn't draw**. Nothing is lost:
+the damage tracker diffs against what it last *emitted*, so the next frame
+carries the union of everything that changed meanwhile, as one frame.
+
+Two things follow, both measured against a pty drained at a fixed rate with
+periodic reader hitches (204×175, 30 fps, 400 ticks):
+
+|  | before | after |
+|---|---|---|
+| loop tick p50 | 33 ms | 33 ms |
+| loop tick p95 | 114 ms | 34 ms |
+| loop tick p99 | 291 ms | 34 ms |
+| loop tick max | 489 ms | 34 ms |
+| tick jitter | 22.5 ms | 0.5 ms |
+| animation speed | 0.84× real time | 1.00× |
+| bytes per second of animation | 2.04 MB | 1.88 MB |
+
+Coalescing is the reason for that last row: a frame covering 200 ms of rain costs
+barely more than one covering 100 ms, because a cell that changed five times is
+still repainted once.
+
+The `--fps` cap still bounds how often we draw. The terminal decides how many of
+those draws it can actually take.
+
 ### Things that didn't work
 
 Kept here because they look obviously correct and aren't:
@@ -233,6 +272,19 @@ Kept here because they look obviously correct and aren't:
   damage, lit cells are sparse in both axes, so neighbouring cells are rarely
   both damaged, and scanning by column trades cheap same-row `MoveRight` hops
   (4.7 bytes) for absolute moves (8.2 bytes).
+- **Discarding whole frames under back-pressure.** The obvious way to bound a
+  write queue, and it corrupts the screen: the damage tracker records every cell
+  it emitted, so a discarded frame leaves those cells permanently stale. Busy
+  rain usually scrubs the smear away within a second, which is what makes the bug
+  so easy to ship — but pause it and the smear is there for good. Skipping the
+  *draw* instead is free and exact. See `tests/coalescing.rs`.
+- **Raising the `dt` clamp on its own.** With writes still on the simulation
+  thread, a bigger clamp means bigger steps, which means bigger frames, which
+  means longer blocking writes: tick p95 got ~3.7× worse (39 ms → 145 ms).
+- **Polling the writer faster than the frame clock** (120 Hz instead of 30) to
+  keep the pipe fed after a write completes. Worth ~10% more displayed frames
+  against a steadily throttled reader, but ~10% *fewer* against a hitching one,
+  and it makes the sim step at 120 Hz for no visible benefit. A wash; dropped.
 - **Dropping glyph churn** (`-m 0`) saves only ~4%. Churn rewrites glyphs but
   those cells are usually already being repainted for their colour.
 

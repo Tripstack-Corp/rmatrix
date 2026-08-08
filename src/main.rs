@@ -15,8 +15,9 @@ use crossterm::terminal::{
     LeaveAlternateScreen,
 };
 use crossterm::{ExecutableCommand, QueueableCommand, cursor};
+use rmatrix::writer::{self, FrameWriter};
 use rmatrix::{BaseColor, Charset, Config, Depth, DrawStats, Levels, Rain, Renderer, Theme};
-use std::io::{Write, stdout};
+use std::io::{Stdout, Write, stdout};
 use std::process::ExitCode;
 use std::str::FromStr;
 use std::time::{Duration, Instant};
@@ -91,6 +92,31 @@ struct Args {
     /// Force colour depth instead of detecting it
     #[arg(long, value_parser = ["auto", "truecolor", "256", "16"], default_value = "auto")]
     color_depth: String,
+
+    /// Write frames from the simulation thread, blocking on the terminal.
+    ///
+    /// The pre-writer-thread behaviour, kept so the two I/O paths can be A/B'd
+    /// under an identical run. Nobody should want this.
+    #[arg(long, hide = true)]
+    sync_io: bool,
+
+    /// Run this many loop ticks with timing instrumentation, then exit,
+    /// reporting frame-time percentiles on stderr.
+    #[arg(long, hide = true, value_name = "TICKS")]
+    bench: Option<u32>,
+
+    /// Seconds of rain to simulate before `--bench` starts measuring.
+    ///
+    /// The slowest drops fall at 6 rows/s, so a 175-row window needs ~29s to
+    /// reach steady state; measuring a half-empty screen understates the output
+    /// volume by roughly 2x.
+    #[arg(long, hide = true, default_value_t = 32.0)]
+    bench_warmup: f32,
+
+    /// Override the largest simulation step, in seconds. 0 derives it from
+    /// `--fps`; see `max_step`. Exposed only so the clamp can be ablated.
+    #[arg(long, hide = true, default_value_t = 0.0)]
+    max_step: f32,
 }
 
 /// Charsets reachable with the `c` key, in order.
@@ -111,7 +137,21 @@ struct Settings {
     depth: Depth,
     config: Config,
     frame: Duration,
+    /// Largest `dt` handed to the simulation in one tick, in seconds.
+    max_step: f32,
 }
+
+/// The `dt` clamp, in frame periods.
+///
+/// Below it the rain moves in exact proportion to elapsed time; beyond it we
+/// have been descheduled or suspended, and teleporting a drop is worse than
+/// losing the time. Three periods is where a hitch stops being jitter.
+const MAX_STEP_FRAMES: f32 = 3.0;
+
+/// Floor for the clamp, so a high `--fps` does not make it hair-trigger. At the
+/// default 30 fps the two agree exactly, which is deliberate: this is the value
+/// the loop has always used.
+const MAX_STEP_FLOOR: f32 = 0.1;
 
 fn main() -> ExitCode {
     let args = Args::parse();
@@ -173,10 +213,22 @@ fn validate(args: &Args) -> Result<Settings> {
         _ => Depth::detect(),
     };
 
+    let frame = Duration::from_secs_f64(1.0 / f64::from(args.fps.clamp(1, 240)));
+    // A fixed 0.1s clamp is a bug below ~10 fps: the frame period exceeds it, so
+    // every step is truncated and the rain runs in slow motion — at `--fps 5`,
+    // measurably at exactly half speed. Scaling with the frame period fixes that
+    // and leaves the default untouched.
+    let max_step = if args.max_step.is_finite() && args.max_step > 0.0 {
+        args.max_step
+    } else {
+        default_max_step(frame)
+    };
+
     Ok(Settings {
         base,
         rainbow,
         depth,
+        max_step,
         config: Config {
             speed: args.speed,
             density: args.density,
@@ -186,7 +238,7 @@ fn validate(args: &Args) -> Result<Settings> {
             glyphs: args.charset.glyphs(&args.custom),
             seed: args.seed,
         },
-        frame: Duration::from_secs_f64(1.0 / f64::from(args.fps.clamp(1, 240))),
+        frame,
     })
 }
 
@@ -197,15 +249,26 @@ fn validate(args: &Args) -> Result<Settings> {
 #[derive(Default)]
 struct Meter {
     frames: u32,
+    /// Ticks where the terminal was still busy, so the draw was folded into the
+    /// next frame instead.
+    skipped: u32,
     window: Duration,
     bytes: usize,
     damaged: usize,
     fps: f32,
     bytes_per_frame: f32,
     damage_pct: f32,
+    coalesce_pct: f32,
 }
 
 impl Meter {
+    /// A tick that produced no frame because the writer was still busy. Worth
+    /// surfacing: a non-zero figure is the terminal telling you it is the
+    /// bottleneck.
+    fn skip(&mut self) {
+        self.skipped += 1;
+    }
+
     /// Returns true when the averaging window closed and the published figures
     /// changed — the caller uses that to avoid rewriting the title every frame.
     fn record(&mut self, dt: Duration, stats: DrawStats, cells: usize) -> bool {
@@ -224,10 +287,13 @@ impl Meter {
             } else {
                 self.damaged as f32 / (self.frames as usize * cells) as f32 * 100.0
             };
+            self.coalesce_pct =
+                self.skipped as f32 / (self.frames + self.skipped).max(1) as f32 * 100.0;
             *self = Meter {
                 fps: self.fps,
                 bytes_per_frame: self.bytes_per_frame,
                 damage_pct: self.damage_pct,
+                coalesce_pct: self.coalesce_pct,
                 ..Meter::default()
             };
             return true;
@@ -237,11 +303,12 @@ impl Meter {
 
     fn line(&self, levels: u16, auto: bool) -> String {
         format!(
-            " {:.0} fps · {:.1} KB/frame · {:.2} MB/s · {:.1}% cells · {}{} · q quit ",
+            " {:.0} fps · {:.1} KB/frame · {:.2} MB/s · {:.1}% cells · {:.0}% coalesced · {}{} · q quit ",
             self.fps,
             self.bytes_per_frame / 1024.0,
             self.bytes_per_frame * self.fps / 1.0e6,
             self.damage_pct,
+            self.coalesce_pct,
             levels,
             if auto { " auto" } else { "" },
         )
@@ -255,11 +322,12 @@ impl Meter {
     /// with Matrix Code NFI.
     fn title(&self, levels: u16, auto: bool) -> String {
         format!(
-            "rmatrix — {:.0} fps · {:.1} KB/frame · {:.2} MB/s · {:.1}% cells · {} levels{}",
+            "rmatrix — {:.0} fps · {:.1} KB/frame · {:.2} MB/s · {:.1}% cells · {:.0}% coalesced · {} levels{}",
             self.fps,
             self.bytes_per_frame / 1024.0,
             self.bytes_per_frame * self.fps / 1.0e6,
             self.damage_pct,
+            self.coalesce_pct,
             levels,
             if auto { " (auto)" } else { "" },
         )
@@ -280,8 +348,8 @@ impl Meter {
 /// covers the default and every rate anyone runs in practice. Between 10 and
 /// 30 fps it is somewhat more permissive than before (up to 0.3 s), which is the
 /// point: "three frames" is a meaningful stall at any rate, "0.1 seconds" is not.
-fn max_step(frame: Duration) -> f32 {
-    (frame.as_secs_f32() * 3.0).max(0.1)
+fn default_max_step(frame: Duration) -> f32 {
+    (frame.as_secs_f32() * MAX_STEP_FRAMES).max(MAX_STEP_FLOOR)
 }
 
 /// OSC 2. Terminals that don't support it ignore the sequence.
@@ -315,6 +383,79 @@ fn draw_overlay<W: Write>(
     Ok(())
 }
 
+/// Where drawn frames go.
+///
+/// The loop always renders into a plain `Vec<u8>`, which can neither block nor
+/// fail; the only difference between the variants is who hands those bytes to
+/// the file descriptor and when.
+enum Sink {
+    /// A writer thread owns stdout. The loop never blocks on the terminal.
+    Threaded(FrameWriter),
+    /// The pre-writer-thread path: write and flush inline, on the simulation
+    /// thread, and stall there when the terminal is behind. Retained only so
+    /// `--sync-io` can measure the thing we are fixing.
+    Blocking { free: Option<Vec<u8>>, out: Stdout },
+}
+
+impl Sink {
+    fn new(sync_io: bool, capacity: usize) -> Sink {
+        if sync_io {
+            Sink::Blocking {
+                free: Some(Vec::with_capacity(capacity)),
+                out: stdout(),
+            }
+        } else {
+            Sink::Threaded(FrameWriter::spawn(stdout(), capacity))
+        }
+    }
+
+    /// A cleared buffer to draw into, or `None` if the terminal is still
+    /// swallowing the previous frame. `None` means **do not draw**: skipping the
+    /// draw is exactly how frames coalesce without the damage tracker ever
+    /// losing track of the screen.
+    fn acquire(&mut self) -> Option<Vec<u8>> {
+        match self {
+            Sink::Threaded(w) => w.acquire(),
+            Sink::Blocking { free, .. } => free.take().map(|mut b| {
+                b.clear();
+                b
+            }),
+        }
+    }
+
+    /// Hand off a drawn frame. Must never silently discard it — every byte the
+    /// renderer produced has already been recorded in its `prev` buffer.
+    fn submit(&mut self, buf: Vec<u8>) -> Result<()> {
+        match self {
+            Sink::Threaded(w) => Ok(w.submit(buf)?),
+            Sink::Blocking { free, out } => {
+                out.write_all(&buf)?;
+                out.flush()?;
+                *free = Some(buf);
+                Ok(())
+            }
+        }
+    }
+
+    fn failed(&self) -> bool {
+        match self {
+            Sink::Threaded(w) => w.failed(),
+            Sink::Blocking { .. } => false,
+        }
+    }
+
+    /// Emit `last` and stop. Returns true if the sequence definitely reached the
+    /// terminal; on false the caller falls back to writing it directly.
+    fn shutdown(&mut self, last: Vec<u8>) -> bool {
+        match self {
+            // A second is far longer than any healthy terminal needs to accept
+            // one frame, and short enough that quitting never feels hung.
+            Sink::Threaded(w) => w.shutdown(last, Duration::from_secs(1)),
+            Sink::Blocking { out, .. } => out.write_all(&last).and_then(|()| out.flush()).is_ok(),
+        }
+    }
+}
+
 fn setup(bold: bool) -> Result<()> {
     terminal::enable_raw_mode().context("entering raw mode")?;
     let mut out = stdout();
@@ -330,17 +471,130 @@ fn setup(bold: bool) -> Result<()> {
     Ok(())
 }
 
+/// The bytes that put the terminal back the way we found it.
+///
+/// Split out from [`restore`] because the writer thread must be able to emit
+/// them as its final act: whoever wrote the last frame has to write the restore
+/// too, or the two can race.
+fn restore_sequence() -> Vec<u8> {
+    let mut b = Vec::new();
+    let _ = b.write_all(b"\x1b[23;2t"); // give the window title back
+    let _ = b.queue(SetAttribute(Attribute::Reset));
+    let _ = b.queue(cursor::Show);
+    let _ = b.queue(EnableLineWrap);
+    let _ = b.queue(LeaveAlternateScreen);
+    b
+}
+
 /// Best-effort teardown. Used by the panic hook too, so it must not panic and
 /// must be safe to call more than once.
+///
+/// Safe to call while a writer thread is live: it goes through `Stdout`, whose
+/// lock is held for the whole of `write_all`, so this can only land before or
+/// after a frame, never inside one.
 fn restore() {
+    writer::abort_all();
     let mut out = stdout();
-    let _ = out.write_all(b"\x1b[23;2t"); // give the window title back
-    let _ = out.execute(SetAttribute(Attribute::Reset));
-    let _ = out.execute(cursor::Show);
-    let _ = out.execute(EnableLineWrap);
-    let _ = out.execute(LeaveAlternateScreen);
+    let _ = out.write_all(&restore_sequence());
     let _ = terminal::disable_raw_mode();
     let _ = out.flush();
+}
+
+/// Ticks excluded from `--bench` samples. The first draw after the alt-screen
+/// clear repaints every lit cell — an order of magnitude more bytes than a
+/// steady-state frame — and that one outlier is not what anybody is looking at.
+const BENCH_PRIME_TICKS: u32 = 15;
+
+/// Timing recorder for `--bench`.
+#[derive(Default)]
+struct Bench {
+    /// Wall interval between loop ticks. `dt` is derived from it, so its spread
+    /// is the spread of how far the rain moves per simulation step.
+    tick_ms: Vec<f64>,
+    /// Wall interval between frames that actually reached the terminal.
+    frame_ms: Vec<f64>,
+    /// Simulated time carried by each of those frames.
+    step_ms: Vec<f64>,
+    /// Per displayed frame, the share of elapsed wall time the rain failed to
+    /// cover, as a percentage. Zero means the drops moved exactly as far as the
+    /// clock said they should. A large value is a freeze-then-lurch: the screen
+    /// held still for 300ms and then advanced 100ms worth of rain.
+    deficit_pct: Vec<f64>,
+    pending: f64,
+    /// The first displayed frame straddles the boundary into the measured
+    /// window: its wall interval reaches back before measurement started but its
+    /// accumulated `pending` does not, so the pair is not comparable. Dropped.
+    seen_frame: bool,
+    sim_ms: f64,
+    wall_ms: f64,
+}
+
+impl Bench {
+    fn tick(&mut self, interval: Duration, dt: f32) {
+        let ms = interval.as_secs_f64() * 1000.0;
+        self.tick_ms.push(ms);
+        self.wall_ms += ms;
+        self.sim_ms += f64::from(dt) * 1000.0;
+        self.pending += f64::from(dt) * 1000.0;
+    }
+
+    fn frame(&mut self, interval: Duration) {
+        let ms = interval.as_secs_f64() * 1000.0;
+        if self.seen_frame {
+            self.frame_ms.push(ms);
+            self.step_ms.push(self.pending);
+            self.deficit_pct
+                .push(((1.0 - self.pending / ms.max(f64::EPSILON)) * 100.0).max(0.0));
+        }
+        self.seen_frame = true;
+        self.pending = 0.0;
+    }
+
+    fn report(&self, mode: &str, submitted: u64, coalesced: u64) {
+        eprintln!(
+            "BENCH mode={mode} ticks={} frames={submitted} coalesced={coalesced}",
+            self.tick_ms.len()
+        );
+        summarise("tick_ms ", &self.tick_ms);
+        summarise("frame_ms", &self.frame_ms);
+        summarise("step_ms ", &self.step_ms);
+        summarise("deficit%", &self.deficit_pct);
+        // 1.000 means the rain kept up with the wall clock. Below that it ran in
+        // slow motion, which is what a `dt` clamp buys you if it fires often.
+        eprintln!(
+            "BENCH pacing sim/wall={:.4}",
+            self.sim_ms / self.wall_ms.max(f64::EPSILON)
+        );
+    }
+}
+
+/// One line of distribution for a series of frame times.
+///
+/// Smoothness is a distribution, not an average: `jit` is the mean absolute
+/// difference between consecutive samples, which is what an eye actually
+/// notices — a steady 80ms looks far better than 33ms alternating with 130ms.
+fn summarise(label: &str, v: &[f64]) {
+    if v.is_empty() {
+        eprintln!("BENCH {label} n=0");
+        return;
+    }
+    let jit = v.windows(2).map(|w| (w[1] - w[0]).abs()).sum::<f64>() / (v.len().max(2) - 1) as f64;
+    let mean = v.iter().sum::<f64>() / v.len() as f64;
+    let sd = (v.iter().map(|x| (x - mean).powi(2)).sum::<f64>() / v.len() as f64).sqrt();
+    let mut s = v.to_vec();
+    s.sort_by(f64::total_cmp);
+    let q = |p: f64| s[((s.len() - 1) as f64 * p).round() as usize];
+    eprintln!(
+        "BENCH {label} n={:<5} p50={:>8.2} p95={:>8.2} p99={:>8.2} max={:>9.2} mean={:>8.2} sd={:>8.2} jit={:>8.2}",
+        s.len(),
+        q(0.50),
+        q(0.95),
+        q(0.99),
+        q(1.0),
+        mean,
+        sd,
+        jit
+    );
 }
 
 fn run(args: &Args, s: Settings) -> Result<()> {
@@ -363,19 +617,38 @@ fn run(args: &Args, s: Settings) -> Result<()> {
     let mut rain = Rain::new(w, h, s.config);
     let mut renderer = Renderer::new(w, h);
 
-    let max_step = max_step(s.frame);
-    let mut out = std::io::BufWriter::with_capacity(1 << 18, stdout());
-    let mut last = Instant::now();
-    let mut last_frame = Instant::now();
+    let mut sink = Sink::new(args.sync_io, 1 << 18);
+    // Control sequences that are not part of a frame — a clear on resize, a bold
+    // toggle — parked until a frame buffer is free so they stay in order with
+    // the drawing they belong to.
+    let mut oob: Vec<u8> = Vec::new();
     let mut paused = false;
     let mut show_stats = args.stats;
     let mut meter = Meter::default();
+    let mut bench = Bench::default();
+
+    if args.bench.is_some() {
+        // Reach steady state without drawing: a half-full screen emits about
+        // half the bytes and would flatter both I/O paths equally but
+        // meaninglessly.
+        let step = s.frame.as_secs_f32();
+        for _ in 0..(args.bench_warmup.max(0.0) / step) as u32 {
+            rain.step(step);
+        }
+    }
+
+    let mut tick_at = Instant::now();
+    let mut last_frame = Instant::now();
+    // Absolute cadence: the next tick is scheduled from the last *deadline*, not
+    // from when this one happened to finish, so render time does not accumulate
+    // into a drift.
+    let mut next = tick_at + s.frame;
+    let mut ticks = 0u32;
+    let (mut sent, mut skipped) = (0u64, 0u64);
 
     'outer: loop {
-        let frame_start = Instant::now();
-
-        // Drain input until it is time to render the next frame.
-        while let Some(remaining) = s.frame.checked_sub(frame_start.elapsed()) {
+        // Drain input until the tick deadline.
+        while let Some(remaining) = next.checked_duration_since(Instant::now()) {
             if !event::poll(remaining)? {
                 break;
             }
@@ -410,13 +683,13 @@ fn run(args: &Args, s: Settings) -> Result<()> {
                         }
                         KeyCode::Char('b') => {
                             bold = !bold;
-                            out.write_all(if bold { b"\x1b[1m" } else { b"\x1b[22m" })?;
+                            oob.extend_from_slice(if bold { b"\x1b[1m" } else { b"\x1b[22m" });
                             renderer.resize(w, h);
                         }
                         KeyCode::Char('f') => {
                             show_stats = !show_stats;
                             if !show_stats {
-                                set_title(&mut out, "rmatrix")?;
+                                set_title(&mut oob, "rmatrix")?;
                             }
                             // Repaint so the row the overlay occupied comes back.
                             renderer.resize(w, h);
@@ -433,48 +706,91 @@ fn run(args: &Args, s: Settings) -> Result<()> {
                     theme.levels = args.levels.resolve(w, h);
                     rain.resize(w, h);
                     renderer.resize(w, h);
-                    out.write_all(b"\x1b[2J")?;
+                    oob.extend_from_slice(b"\x1b[2J");
                 }
                 _ => {}
             }
         }
 
         let now = Instant::now();
-        let dt = (now - last).as_secs_f32().min(max_step);
-        last = now;
+        next += s.frame;
+        if next <= now {
+            // A whole period behind. Resync instead of firing a burst of
+            // catch-up ticks, which is its own kind of stutter.
+            next = now + s.frame;
+        }
+        // Clamp so a stall (laptop sleep, SIGSTOP) doesn't teleport every drop.
+        let dt = (now - tick_at).as_secs_f32().min(s.max_step);
+        if args.bench.is_some() && ticks >= BENCH_PRIME_TICKS {
+            bench.tick(now - tick_at, dt);
+        }
+        tick_at = now;
 
         if !paused {
             rain.step(dt);
         }
-        let stats = renderer.draw(&mut out, &rain, &theme, s.depth)?;
-        let refreshed = meter.record(now - last_frame, stats, w as usize * h as usize);
-        last_frame = now;
 
-        if show_stats {
-            draw_overlay(
-                &mut out,
-                w,
-                &meter,
-                theme.levels,
-                args.levels == Levels::Auto,
-            )?;
-            // Only on refresh: retitling every frame is pointless churn, and
-            // some terminals flash the title bar when it changes.
-            if refreshed {
-                set_title(
-                    &mut out,
-                    &meter.title(theme.levels, args.levels == Levels::Auto),
-                )?;
+        // Draw only when the terminal has finished with the last frame. When it
+        // has not, this tick's damage is not lost — the renderer diffs against
+        // what it last *emitted*, so the next frame carries it too.
+        if let Some(mut buf) = sink.acquire() {
+            buf.append(&mut oob);
+            let stats = renderer.draw(&mut buf, &rain, &theme, s.depth)?;
+            let refreshed = meter.record(now - last_frame, stats, w as usize * h as usize);
+            if args.bench.is_some() && ticks >= BENCH_PRIME_TICKS {
+                bench.frame(now - last_frame);
             }
-            // The overlay wrote colour and moved the cursor behind the
-            // renderer's back; without this the next frame paints wrong.
-            renderer.forget_cursor_and_color();
-            out.flush()?;
+            last_frame = now;
+
+            if show_stats {
+                draw_overlay(
+                    &mut buf,
+                    w,
+                    &meter,
+                    theme.levels,
+                    args.levels == Levels::Auto,
+                )?;
+                // Only on refresh: retitling every frame is pointless churn, and
+                // some terminals flash the title bar when it changes.
+                if refreshed {
+                    set_title(
+                        &mut buf,
+                        &meter.title(theme.levels, args.levels == Levels::Auto),
+                    )?;
+                }
+                // The overlay wrote colour and moved the cursor behind the
+                // renderer's back; without this the next frame paints wrong.
+                renderer.forget_cursor_and_color();
+            }
+            sink.submit(buf)?;
+            sent += u64::from(ticks >= BENCH_PRIME_TICKS);
+        } else {
+            meter.skip();
+            skipped += u64::from(ticks >= BENCH_PRIME_TICKS);
+        }
+
+        if sink.failed() {
+            bail!("the terminal writer stopped");
+        }
+        ticks = ticks.saturating_add(1);
+        if args
+            .bench
+            .is_some_and(|n| ticks >= n.saturating_add(BENCH_PRIME_TICKS))
+        {
+            break 'outer;
         }
     }
 
-    drop(out);
-    restore();
+    if sink.shutdown(restore_sequence()) {
+        // The sink emitted the escape sequence itself; only the termios flip is
+        // left, and that is ours.
+        let _ = terminal::disable_raw_mode();
+    } else {
+        restore();
+    }
+    if args.bench.is_some() {
+        bench.report(if args.sync_io { "sync" } else { "async" }, sent, skipped);
+    }
     Ok(())
 }
 
@@ -583,6 +899,36 @@ mod tests {
             format!("{e:#}").contains("--color"),
             "error lost its context: {e:#}"
         );
+    }
+
+    #[test]
+    fn the_step_clamp_never_throttles_the_frame_rate_asked_for() {
+        // A fixed 0.1s clamp shorter than the frame period truncates every step,
+        // and the rain silently runs slow — at `--fps 5` it measured at exactly
+        // half speed. The clamp must never sit below one frame period.
+        for fps in [1u16, 5, 10, 15, 24, 30, 60, 120, 240] {
+            let a = Args::parse_from(["rmatrix", "--fps", &fps.to_string()]);
+            let s = validate(&a).expect("valid");
+            assert!(
+                s.max_step >= s.frame.as_secs_f32(),
+                "at {fps} fps the clamp {} is under the frame period {:?}",
+                s.max_step,
+                s.frame
+            );
+        }
+    }
+
+    #[test]
+    fn the_step_clamp_is_unchanged_at_the_default_frame_rate() {
+        // 3 x 1/30s is exactly the 0.1s the loop has always used, so nobody on
+        // defaults sees a different animation.
+        assert!((validate(&args()).expect("valid").max_step - 0.1).abs() < 1e-6);
+        // Faster frame rates keep the floor rather than shrinking with it.
+        let a = Args::parse_from(["rmatrix", "--fps", "120"]);
+        assert!((validate(&a).expect("valid").max_step - 0.1).abs() < 1e-6);
+        // Slower ones scale up.
+        let a = Args::parse_from(["rmatrix", "--fps", "5"]);
+        assert!((validate(&a).expect("valid").max_step - 0.6).abs() < 1e-6);
     }
 
     #[test]
@@ -716,7 +1062,7 @@ mod tests {
         // under 10 fps, so every frame was truncated and the rain ran slow.
         for fps in [1u16, 2, 5, 10, 24, 30, 60, 120, 240] {
             let frame = Duration::from_secs_f64(1.0 / f64::from(fps));
-            let clamp = max_step(frame);
+            let clamp = default_max_step(frame);
             assert!(
                 clamp >= frame.as_secs_f32(),
                 "--fps {fps}: clamp {clamp} truncates a normal {:?} frame",
@@ -731,14 +1077,18 @@ mod tests {
         // default rate and behaviour is identical to the old flat clamp.
         for fps in [30u16, 60, 120, 240] {
             let frame = Duration::from_secs_f64(1.0 / f64::from(fps));
-            assert_eq!(max_step(frame), 0.1, "--fps {fps} changed behaviour");
+            assert_eq!(
+                default_max_step(frame),
+                0.1,
+                "--fps {fps} changed behaviour"
+            );
         }
         // Below 30 it is deliberately looser — three frames rather than a flat
         // tenth of a second — but never tighter.
         for fps in [10u16, 24] {
             let frame = Duration::from_secs_f64(1.0 / f64::from(fps));
             assert!(
-                max_step(frame) >= 0.1,
+                default_max_step(frame) >= 0.1,
                 "--fps {fps} got tighter, not looser"
             );
         }
@@ -749,7 +1099,7 @@ mod tests {
         // It must not become so loose that a genuine stall teleports the rain.
         for fps in [5u16, 30, 60] {
             let frame = Duration::from_secs_f64(1.0 / f64::from(fps));
-            let clamp = max_step(frame);
+            let clamp = default_max_step(frame);
             assert!(clamp <= 0.6, "--fps {fps}: clamp {clamp} is too permissive");
             // A ten-frame stall is abnormal and must still be clamped.
             assert!(clamp < frame.as_secs_f32() * 10.0);
