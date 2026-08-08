@@ -207,15 +207,22 @@ impl Rain {
                 // head, given this drop's speed.
                 let decay = EPS.powf(d.speed / d.tail.max(MIN_TAIL));
                 for r in (prev.floor() as i32 + 1)..=(d.row.floor() as i32) {
-                    if r < 0 || r >= i32::from(h) {
-                        continue;
-                    }
-                    let idx = r as usize * w + x;
+                    // Un-head before the bounds test, not after it. Skipping
+                    // this when the new row is off the bottom left the last
+                    // on-screen cell flagged `head: true`, and `Theme::color`
+                    // returns full head-white whenever that flag is set, whatever
+                    // the glow — so a white glyph sat parked on the bottom row
+                    // until decay dragged it under EPS, up to `tail / speed`
+                    // seconds later.
                     if let Some(p) = d.head_idx.take()
                         && let Some(c) = cells.get_mut(p)
                     {
                         c.head = false;
                     }
+                    if r < 0 || r >= i32::from(h) {
+                        continue;
+                    }
+                    let idx = r as usize * w + x;
                     let ch = pick(rng, &cfg.glyphs);
                     if let Some(c) = cells.get_mut(idx) {
                         *c = Cell {
@@ -229,7 +236,12 @@ impl Rain {
                 }
             }
             // By the time a drop is this far gone its trail has already decayed
-            // below EPS, so nothing on screen still refers to it.
+            // below EPS, so nothing on screen still refers to it. Its head is
+            // gone too, and strictly earlier: `tail` is at least MIN_TAIL, so a
+            // drop only becomes removable well after its row passed `h`, and the
+            // loop above clears `head_idx` on the crossing itself. Dropping a
+            // `Drop` therefore cannot strand a flagged cell — which it would,
+            // permanently, since nothing else ever clears the flag.
             col.drops.retain(|d| d.row - d.tail < f32::from(h));
         }
     }
@@ -423,6 +435,86 @@ mod tests {
         assert!(
             best >= 5,
             "trail only reached {best} distinct brightness levels"
+        );
+    }
+
+    /// Longest run of consecutive frames for which `cell` was flagged as a head.
+    ///
+    /// A head legitimately occupies one cell only until its drop crosses into
+    /// the next row. The slowest drop falls 6 rows/s, so at 60 fps that is ten
+    /// frames of stepping plus the frame it was written in — eleven. Anything
+    /// beyond that is a flag nobody is going to clear.
+    fn longest_head_run(w: u16, h: u16, cfg: Config, frames: usize) -> u32 {
+        let mut r = Rain::new(w, h, cfg);
+        let mut run = vec![0u32; w as usize * h as usize];
+        let mut worst = 0u32;
+        for _ in 0..frames {
+            r.step(1.0 / 60.0);
+            for y in 0..h {
+                for x in 0..w {
+                    let i = y as usize * w as usize + x as usize;
+                    if r.cell(x, y).expect("in bounds by construction").head {
+                        run[i] += 1;
+                        worst = worst.max(run[i]);
+                    } else {
+                        run[i] = 0;
+                    }
+                }
+            }
+        }
+        worst
+    }
+
+    #[test]
+    fn a_head_that_falls_off_screen_stops_being_a_head() {
+        // The bug: `advance` hit `continue` on the out-of-bounds row and skipped
+        // the un-heading branch, so the last on-screen cell kept `head: true`.
+        // `Theme::color` paints a head full white regardless of glow, leaving a
+        // white glyph parked on the bottom row until decay finished — with the
+        // 40-row tail used here, several hundred frames.
+        let h = 20u16;
+        let worst = longest_head_run(
+            1,
+            h,
+            Config {
+                density: 1.0,
+                mutate: 0.0,
+                tail_min: 40.0,
+                tail_max: 40.5,
+                ..cfg(13)
+            },
+            1800,
+        );
+        assert!(worst > 0, "no head ever reached the grid");
+        assert!(
+            worst <= 12,
+            "a cell stayed flagged as the head for {worst} frames"
+        );
+    }
+
+    #[test]
+    fn no_head_outlives_the_drop_that_wrote_it() {
+        // The other way a flag could be stranded: `advance` retires a drop once
+        // its trail is off screen, and a drop retired while `head_idx` still
+        // pointed at a live cell would leave that cell white forever. It cannot
+        // happen — the head is cleared on the crossing, which is strictly
+        // earlier — and this pins the ordering across a busy grid rather than
+        // one contrived column.
+        let worst = longest_head_run(
+            40,
+            30,
+            Config {
+                density: 1.0,
+                tail_min: 40.0,
+                tail_max: 41.0,
+                ..cfg(17)
+            },
+            1200,
+        );
+        assert!(worst > 0, "nothing ever rendered");
+        assert!(
+            worst <= 12,
+            "a cell stayed flagged as the head for {worst} frames"
         );
     }
 

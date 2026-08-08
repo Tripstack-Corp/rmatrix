@@ -153,12 +153,12 @@ Measured at 200×50, 600 frames per row:
 
 | `--levels` | bytes/frame | at 30 fps | cells repainted | vs unquantised |
 |---|---|---|---|---|
-| none | 35,488 | 1.06 MB/s | 21.1% | 1.00× |
-| 64 | 28,537 | 0.86 MB/s | 15.6% | 1.24× |
-| 32 | 24,246 | 0.73 MB/s | 12.8% | 1.46× |
-| **24** (`auto` on a small window) | **21,595** | **0.65 MB/s** | **11.6%** | **1.64×** |
-| 16 | 19,588 | 0.59 MB/s | 9.9% | 1.81× |
-| 8 | 13,697 | 0.41 MB/s | 7.2% | 2.59× |
+| none | 36,857 | 1.11 MB/s | 21.9% | 1.00× |
+| 64 | 29,574 | 0.89 MB/s | 16.1% | 1.25× |
+| 32 | 25,005 | 0.75 MB/s | 13.1% | 1.47× |
+| **24** (`auto` on a small window) | **22,220** | **0.67 MB/s** | **11.9%** | **1.66×** |
+| 16 | 20,134 | 0.60 MB/s | 10.1% | 1.83× |
+| 8 | 13,943 | 0.42 MB/s | 7.3% | 2.64× |
 
 ### Recommended settings
 
@@ -173,8 +173,8 @@ and 8 at a full-screen vertical 204×175.
 
 | Window | `auto` picks | Output |
 |---|---|---|
-| 80×24 | 24 | ~0.13 MB/s |
-| 120×40 | 22 | ~0.31 MB/s |
+| 80×24 | 24 | ~0.14 MB/s |
+| 120×40 | 22 | ~0.33 MB/s |
 | 200×50 | 15 | ~0.6 MB/s |
 | 204×175 | 8 | ~1.8 MB/s |
 
@@ -198,10 +198,10 @@ case — 204×175 is 35,700 cells, nine times a stock 80×24. Measured there, ov
 
 | Settings | bytes/frame | at 30 fps |
 |---|---|---|
-| `-d 0.75 --tail-max 40` (dense, long) | 104,033 | 3.12 MB/s |
-| `--levels 12` added | 77,959 | 2.34 MB/s |
-| `--levels 8` added | 60,824 | 1.82 MB/s |
-| default density/tail, `--levels 12` | 62,052 | 1.86 MB/s |
+| `-d 0.75 --tail-max 40` (dense, long) | 101,807 | 3.05 MB/s |
+| `--levels 12` added | 76,063 | 2.28 MB/s |
+| `--levels 8` added | 59,384 | 1.78 MB/s |
+| default density/tail, `--levels 12` | 58,813 | 1.76 MB/s |
 
 Density and tail length matter as much as `--levels`: they set how many cells are
 lit at all, and dense-and-long roughly doubles it.
@@ -220,14 +220,14 @@ changed — so the product barely moves. At 204×175:
 
 | `--fps` | bytes/frame | MB/s | if it were linear |
 |---|---|---|---|
-| 60 | 31,379 | 1.88 | — |
-| **30** (default) | 60,079 | **1.80** | 1.80 |
-| 24 | 70,957 | 1.70 | 1.44 |
-| 15 | 101,999 | **1.53** | 0.90 |
-| 10 | 131,422 | 1.31 | 0.60 |
+| 60 | 31,605 | 1.90 | — |
+| **30** (default) | 60,070 | **1.80** | 1.80 |
+| 24 | 72,835 | 1.75 | 1.44 |
+| 15 | 102,913 | **1.54** | 0.90 |
+| 10 | 130,480 | 1.30 | 0.60 |
 
-Dropping 30 → 15 fps buys **15%**, not 50%, and costs you half your frames. Going
-the other way is nearly free: 60 fps costs only 4% more than 30. Spend your
+Dropping 30 → 15 fps buys **14%**, not 50%, and costs you half your frames. Going
+the other way is nearly free: 60 fps costs only 5% more than 30. Spend your
 budget on `--levels`, `-d` and `--tail-max` instead.
 
 Measuring this also exposed a methodology bug worth repeating here: the harness
