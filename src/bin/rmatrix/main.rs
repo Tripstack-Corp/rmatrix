@@ -2,9 +2,10 @@
 //!
 //! The binary is deliberately thin: all of the behaviour lives in the library
 //! so tests can drive it without a tty. What is left here is the event loop,
-//! split across four modules so that no one file has to be read end to end:
+//! split across five modules so that no one file has to be read end to end:
 //!
 //! - [`cli`] — the flags, and `validate`, the only place input is rejected.
+//! - [`keys`] — telling a held key apart from a pressed one.
 //! - [`term`] — raw mode, the alternate screen, teardown, and where frames go.
 //! - [`meter`] — the stats readout behind the `f` key.
 //! - [`bench`] — timing instrumentation behind the hidden `--bench` flag.
@@ -13,6 +14,7 @@
 
 mod bench;
 mod cli;
+mod keys;
 mod meter;
 mod term;
 
@@ -26,6 +28,7 @@ use std::time::Instant;
 
 use bench::{BENCH_PRIME_TICKS, Bench};
 use cli::{Args, CYCLE, Settings, validate};
+use keys::Repeat;
 use meter::{Meter, draw_overlay, set_title};
 use term::{Sink, restore, restore_sequence, setup};
 
@@ -78,6 +81,8 @@ fn run(args: &Args, s: Settings) -> Result<()> {
     let mut show_stats = args.stats;
     let mut meter = Meter::default();
     let mut bench = Bench::default();
+    // Terminal auto-repeat is byte-identical to a real press; see keys.rs.
+    let mut repeat = Repeat::default();
 
     if args.bench.is_some() {
         // Reach steady state without drawing: a half-full screen emits about
@@ -119,8 +124,18 @@ fn run(args: &Args, s: Settings) -> Result<()> {
                     if args.screensaver {
                         break 'outer;
                     }
+                    // Quitting is checked before the auto-repeat filter and is
+                    // idempotent, so a repeat can never swallow it.
+                    if matches!(code, KeyCode::Char('q') | KeyCode::Esc) {
+                        break 'outer;
+                    }
+                    // Everything past here mutates state, and most of it
+                    // toggles. See keys.rs: a held key otherwise leaves the
+                    // toggle set to the parity of the repeat count.
+                    if kind == KeyEventKind::Repeat || !repeat.accept(code, Instant::now()) {
+                        continue;
+                    }
                     match code {
-                        KeyCode::Char('q') | KeyCode::Esc => break 'outer,
                         KeyCode::Char(' ') => paused = !paused,
                         KeyCode::Char(d @ '1'..='9') => {
                             rain.speed_mul = f32::from(d as u8 - b'0') / 3.0;
