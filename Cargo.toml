@@ -1,0 +1,25 @@
+[package]
+name = "rmatrix"
+version = "0.1.0"
+edition = "2024"
+description = "Digital rain for modern terminals"
+license = "MIT"
+repository = "https://github.com/Tripstack-Corp/rmatrix"
+readme = "README.md"
+keywords = ["matrix", "terminal", "tui", "screensaver", "cli"]
+categories = ["command-line-utilities"]
+# Not published to crates.io: the `rmatrix` name there belongs to an unrelated
+# project. Install with `cargo install --git`.
+publish = false
+
+[dependencies]
+anyhow = "1.0.104"
+clap = { version = "4.6.6", features = ["derive"] }
+crossterm = "0.29.0"
+rand = "0.10.2"
+thiserror = "2.0.19"
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true
