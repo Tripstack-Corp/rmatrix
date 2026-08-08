@@ -8,8 +8,15 @@
 use rmatrix::{Config, DEFAULT_COLOR_TOLERANCE, Depth, Rain, Renderer, Theme};
 use std::time::Instant;
 
+/// The shipped default frame rate. Everything here steps at this rate and
+/// reports totals at this rate.
+///
+/// These MUST agree. An earlier version stepped at 1/60 s while labelling its
+/// totals "at 30 fps", which undercounts by roughly 2x: a 30 fps frame carries
+/// twice the motion of a 60 fps one, so it damages about twice as many cells.
+const FPS: f64 = 30.0;
 const FRAMES: usize = 600;
-const DT: f32 = 1.0 / 60.0;
+const DT: f32 = 1.0 / FPS as f32;
 
 /// Frames needed before the screen is actually full.
 ///
@@ -25,7 +32,7 @@ fn warmup_frames(h: u16) -> usize {
 fn main() {
     println!(
         "{:>10} {:>8} {:>9} {:>9} {:>10} {:>9} {:>8}",
-        "size", "cells", "sim/f", "draw/f", "bytes/f", "B/s@60", "dmg%"
+        "size", "cells", "sim/f", "draw/f", "bytes/f", "MB/s@30", "dmg%"
     );
     println!("{}", "-".repeat(70));
 
@@ -69,13 +76,13 @@ fn main() {
         // Rough damage estimate: an SGR + glyph is ~20 bytes.
         let dmg = (bpf / 20.0) / cells as f64 * 100.0;
         println!(
-            "{:>10} {:>8} {:>8.0?} {:>8.0?} {:>10.0} {:>8.1}M {:>7.0}%",
+            "{:>10} {:>8} {:>8.0?} {:>8.0?} {:>10.0} {:>9.2}M {:>7.0}%",
             format!("{w}x{h}"),
             cells,
             sim / FRAMES as u32,
             draw / FRAMES as u32,
             bpf,
-            bpf * 60.0 / 1e6,
+            bpf * FPS / 1e6,
             dmg.min(100.0),
         );
     }
@@ -86,6 +93,8 @@ fn main() {
     breakdown();
     println!();
     ab();
+    println!();
+    fps_sweep();
 }
 
 /// `levels = 0` is the unquantised ramp, i.e. the original behaviour.
@@ -137,7 +146,7 @@ fn levels_sweep() {
                 levels.to_string()
             },
             bpf,
-            bpf * 30.0 / 1e6,
+            bpf * FPS / 1e6,
             dmg as f64 / FRAMES as f64 / (w as usize * h as usize) as f64 * 100.0,
             baseline / bpf,
         );
@@ -307,6 +316,71 @@ fn ab() {
             }
         }
         let bpf = bytes as f64 / FRAMES as f64;
-        println!("{:>34} {:>11.0} {:>9.2}M", label, bpf, bpf * 30.0 / 1e6);
+        println!("{:>34} {:>11.0} {:>9.2}M", label, bpf, bpf * FPS / 1e6);
+    }
+}
+
+/// Output vs frame rate, measured honestly.
+///
+/// The rest of this harness historically stepped the simulation at 1/60 s while
+/// labelling its totals "at 30 fps". That undercounts: a 30 fps frame carries
+/// twice the motion of a 60 fps one, so it damages more cells. Here each row
+/// steps at its own frame period, which is the only way the MB/s column means
+/// anything.
+fn fps_sweep() {
+    let (w, h) = (204u16, 175u16);
+    println!("output vs frame rate at {w}x{h}, stepping at each rate's own dt:");
+    println!(
+        "{:>6} {:>11} {:>10} {:>10} {:>12}",
+        "fps", "bytes/f", "MB/s", "vs 30fps", "if linear"
+    );
+
+    let mut at30 = 0.0f64;
+    for fps in [30u16, 60, 24, 15, 10] {
+        let dt = 1.0 / f32::from(fps);
+        let mut rain = Rain::new(
+            w,
+            h,
+            Config {
+                seed: Some(1),
+                density: 0.75,
+                tail_max: 40.0,
+                ..Config::default()
+            },
+        );
+        let mut theme = Theme::from_base((0, 255, 65), false);
+        theme.levels = 8;
+        let mut rr = Renderer::new(w, h);
+        // Warm up in simulated time, not frames, so every rate fills equally.
+        let warm = (f32::from(h) / 6.0 * 1.3 / dt) as usize;
+        for _ in 0..warm {
+            rain.step(dt);
+        }
+        let mut sink = Vec::with_capacity(1 << 23);
+        let _ = rr.draw(&mut sink, &rain, &theme, Depth::True);
+
+        let frames = 300;
+        let mut bytes = 0usize;
+        for _ in 0..frames {
+            rain.step(dt);
+            sink.clear();
+            if let Ok(s) = rr.draw(&mut sink, &rain, &theme, Depth::True) {
+                bytes += s.bytes;
+            }
+        }
+        let bpf = bytes as f64 / frames as f64;
+        let mbs = bpf * f64::from(fps) / 1e6;
+        if fps == 30 {
+            at30 = mbs;
+        }
+        let linear = at30 * f64::from(fps) / 30.0;
+        println!(
+            "{:>6} {:>11.0} {:>9.2}M {:>9.2}x {:>11.2}M",
+            fps,
+            bpf,
+            mbs,
+            mbs / at30,
+            linear
+        );
     }
 }

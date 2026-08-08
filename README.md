@@ -133,20 +133,20 @@ So the tuning knobs are all about emitting fewer bytes:
 
 | Setting | Effect |
 |---|---|
-| `--levels <N|auto>` | Brightness steps; `auto` sizes them from the window. A cell only repaints when it crosses a step, so this is the biggest lever. `8` is ~4.2× less output than unquantised, and still nearly 3× cmatrix's three levels. |
-| `--fps <N>` | Output scales linearly. |
+| `--levels <N\|auto>` | Brightness steps; `auto` sizes them from the window. A cell only repaints when it crosses a step, so this is the biggest lever. `8` is ~2.6× less output than unquantised, and still nearly 3× cmatrix's three levels. |
+| `--fps <N>` | A **weak** lever, despite appearances — see below. |
 | `-d`, `--tail-max` | Fewer/shorter trails means fewer lit cells. |
 
 Measured at 200×50, 600 frames per row:
 
 | `--levels` | bytes/frame | at 30 fps | cells repainted | vs unquantised |
 |---|---|---|---|---|
-| none | 31,542 | 0.95 MB/s | 17.7% | 1.00× |
-| 64 | 22,699 | 0.68 MB/s | 11.8% | 1.39× |
-| 32 | 17,253 | 0.52 MB/s | 8.7% | 1.83× |
-| **24** (`auto` on a small window) | **14,497** | **0.43 MB/s** | **7.4%** | **2.18×** |
-| 16 | 12,015 | 0.36 MB/s | 5.8% | 2.63× |
-| 8 | 7,461 | 0.22 MB/s | 3.8% | 4.23× |
+| none | 35,488 | 1.06 MB/s | 21.1% | 1.00× |
+| 64 | 28,537 | 0.86 MB/s | 15.6% | 1.24× |
+| 32 | 24,246 | 0.73 MB/s | 12.8% | 1.46× |
+| **24** (`auto` on a small window) | **21,595** | **0.65 MB/s** | **11.6%** | **1.64×** |
+| 16 | 19,588 | 0.59 MB/s | 9.9% | 1.81× |
+| 8 | 13,697 | 0.41 MB/s | 7.2% | 2.59× |
 
 ### Recommended settings
 
@@ -161,10 +161,10 @@ and 8 at a full-screen vertical 204×175.
 
 | Window | `auto` picks | Output |
 |---|---|---|
-| 80×24 | 24 | negligible |
-| 120×40 | 22 | ~0.1 MB/s |
-| 200×50 | 15 | ~0.4 MB/s |
-| 204×175 | 8 | ~0.95 MB/s |
+| 80×24 | 24 | ~0.13 MB/s |
+| 120×40 | 22 | ~0.31 MB/s |
+| 200×50 | 15 | ~0.6 MB/s |
+| 204×175 | 8 | ~1.8 MB/s |
 
 Pass a number to pin it — `--levels 16` — or `--levels 0` to disable
 quantisation entirely. Pin it higher if you see the tails step rather than fade;
@@ -175,7 +175,8 @@ Density and tail length are not auto-scaled, because they are aesthetic choices
 rather than quality/cost trade-offs. On a big screen `--tail-max 40 -d 0.75`
 looks good and costs about twice the defaults.
 
-If it still struggles, add `--fps 24` — output scales linearly with frame rate.
+If it still struggles, reach for density and tail length before `--fps`; see
+[frame rate is a weak lever](#frame-rate-is-a-weak-lever).
 
 ### Big windows
 
@@ -185,10 +186,10 @@ case — 204×175 is 35,700 cells, nine times a stock 80×24. Measured there, ov
 
 | Settings | bytes/frame | at 30 fps |
 |---|---|---|
-| `-d 0.75 --tail-max 40` (dense, long) | 64,496 | 1.93 MB/s |
-| `--levels 12` added | 42,316 | 1.27 MB/s |
-| `--levels 8` added | 31,530 | 0.95 MB/s |
-| default density/tail, `--levels 12` | 34,347 | 1.03 MB/s |
+| `-d 0.75 --tail-max 40` (dense, long) | 104,033 | 3.12 MB/s |
+| `--levels 12` added | 77,959 | 2.34 MB/s |
+| `--levels 8` added | 60,824 | 1.82 MB/s |
+| default density/tail, `--levels 12` | 62,052 | 1.86 MB/s |
 
 Density and tail length matter as much as `--levels`: they set how many cells are
 lit at all, and dense-and-long roughly doubles it.
@@ -197,6 +198,31 @@ One measurement trap worth knowing if you benchmark this yourself: the slowest
 drops fall at 6 rows/sec, so a 175-row window needs ~29 *seconds* of simulated
 time before the screen is full. Warming up for two seconds measures a half-empty
 screen and flatters every number by about 2×.
+
+### Frame rate is a weak lever
+
+`--fps` looks like it should scale output linearly. It does not, and this README
+claimed it did until it was measured properly. Halving the frame rate roughly
+*doubles* the bytes in each frame, because a longer frame means more cells
+changed — so the product barely moves. At 204×175:
+
+| `--fps` | bytes/frame | MB/s | if it were linear |
+|---|---|---|---|
+| 60 | 31,379 | 1.88 | — |
+| **30** (default) | 60,079 | **1.80** | 1.80 |
+| 24 | 70,957 | 1.70 | 1.44 |
+| 15 | 101,999 | **1.53** | 0.90 |
+| 10 | 131,422 | 1.31 | 0.60 |
+
+Dropping 30 → 15 fps buys **15%**, not 50%, and costs you half your frames. Going
+the other way is nearly free: 60 fps costs only 4% more than 30. Spend your
+budget on `--levels`, `-d` and `--tail-max` instead.
+
+Measuring this also exposed a methodology bug worth repeating here: the harness
+used to step the simulation at 1/60 s while labelling its totals "at 30 fps".
+Every figure it produced was understated by roughly 1.7×. **If you benchmark a
+frame-rate-dependent animation, the step you simulate and the rate you divide by
+have to be the same number.**
 
 ### Things that didn't work
 
