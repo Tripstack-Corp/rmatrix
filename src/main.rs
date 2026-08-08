@@ -15,6 +15,7 @@ use crossterm::terminal::{
     LeaveAlternateScreen,
 };
 use crossterm::{ExecutableCommand, QueueableCommand, cursor};
+use rmatrix::charset::{is_wide, is_zero_width};
 use rmatrix::writer::{self, FrameWriter};
 use rmatrix::{BaseColor, Charset, Config, Depth, DrawStats, Levels, Rain, Renderer, Theme};
 use std::io::{Stdout, Write, stdout};
@@ -39,6 +40,11 @@ struct Args {
     charset: Charset,
 
     /// Glyphs to use with `--charset custom`
+    ///
+    /// Every glyph must occupy exactly one terminal column: no control
+    /// characters, no double-width or fullwidth characters, and no combining
+    /// or zero-width characters. The renderer positions the cursor by counting
+    /// columns, so anything else smears the frame.
     #[arg(long, default_value = "")]
     custom: String,
 
@@ -204,6 +210,35 @@ fn validate(args: &Args) -> Result<Settings> {
     }
     if args.charset == Charset::Custom && args.custom.is_empty() {
         bail!("--charset custom needs --custom <GLYPHS>");
+    }
+    // `--custom` glyphs reach `Print` unfiltered, unlike the built-in sets,
+    // which are tested for these two invariants. A control character would be
+    // injected raw into the escape stream; a glyph that is not one column wide
+    // breaks the renderer's cursor arithmetic (`self.at = (x + 1, y)`) and every
+    // cell drawn after it in that frame lands in the wrong place.
+    //
+    // Checked whenever the flag is given rather than only under `--charset
+    // custom`: the value is nonsense for this flag either way, and silently
+    // ignoring it is how a typo survives to the one run where it matters.
+    for ch in args.custom.chars() {
+        if ch.is_control() {
+            bail!(
+                "--custom cannot contain control characters, found U+{:04X}",
+                ch as u32
+            );
+        }
+        if is_wide(ch) {
+            bail!(
+                "--custom needs single-column glyphs, but {ch:?} (U+{:04X}) is double-width",
+                ch as u32
+            );
+        }
+        if is_zero_width(ch) {
+            bail!(
+                "--custom needs single-column glyphs, but U+{:04X} is combining or zero-width",
+                ch as u32
+            );
+        }
     }
 
     let depth = match args.color_depth.as_str() {
@@ -888,6 +923,59 @@ mod tests {
         );
         a.custom = "ab".into();
         assert!(validate(&a).is_ok());
+    }
+
+    #[test]
+    fn custom_glyphs_that_would_desync_the_renderer_are_rejected() {
+        // The built-in charsets are tested for these invariants; `--custom` is
+        // the one path that reaches `Print` without them. A control character
+        // lands in the middle of the escape stream, and anything that is not one
+        // column wide breaks the cursor arithmetic in `render.rs`, which shifts
+        // every cell drawn after it.
+        for (bad, what) in [
+            ("a\u{7}b", "a control character"),
+            ("ab\u{1b}", "an escape"),
+            ("日", "a fullwidth ideograph"),
+            ("Ａ", "fullwidth ASCII"),
+            ("🌧", "a pictograph"),
+            ("e\u{0301}", "a combining acute"),
+            ("a\u{200D}b", "a zero-width joiner"),
+        ] {
+            let mut a = args();
+            a.charset = Charset::Custom;
+            a.custom = bad.into();
+            assert!(
+                validate(&a).is_err(),
+                "{bad:?} contains {what} and should be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn single_column_custom_glyphs_are_accepted() {
+        // Halfwidth katakana is the case that must not be caught by the width
+        // check: it sits directly above the fullwidth block it is screening for.
+        for good in ["abc", "ｱｲｳ", "01", "αβγ", "!@#"] {
+            let mut a = args();
+            a.charset = Charset::Custom;
+            a.custom = good.into();
+            assert!(validate(&a).is_ok(), "{good:?} should be accepted");
+        }
+    }
+
+    #[test]
+    fn a_rejected_custom_glyph_says_which_flag_and_which_character() {
+        for bad in ["a\u{7}b", "日", "a\u{200D}b"] {
+            let mut a = args();
+            a.charset = Charset::Custom;
+            a.custom = bad.into();
+            let e = format!("{:#}", validate(&a).expect_err("should reject"));
+            assert!(e.contains("--custom"), "error did not name the flag: {e}");
+            assert!(
+                e.contains("U+"),
+                "error did not identify the character: {e}"
+            );
+        }
     }
 
     #[test]
