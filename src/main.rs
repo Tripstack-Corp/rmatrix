@@ -266,6 +266,24 @@ impl Meter {
     }
 }
 
+/// Largest simulation step we will take in one frame.
+///
+/// This exists so a stall — laptop sleep, SIGSTOP, a terminal that stopped
+/// draining — doesn't teleport every drop down the screen when the process
+/// resumes. It has to sit *above* the normal frame period, or it truncates every
+/// ordinary frame instead of only the abnormal ones: a flat 0.1 s clamp is below
+/// the frame period under 10 fps, which silently ran `--fps 5` at exactly half
+/// speed and `--fps 2` at a fifth.
+///
+/// Three frames' worth still catches a real stall promptly. The 0.1 s floor
+/// makes this bit-identical to the old flat clamp at 30 fps and above, which
+/// covers the default and every rate anyone runs in practice. Between 10 and
+/// 30 fps it is somewhat more permissive than before (up to 0.3 s), which is the
+/// point: "three frames" is a meaningful stall at any rate, "0.1 seconds" is not.
+fn max_step(frame: Duration) -> f32 {
+    (frame.as_secs_f32() * 3.0).max(0.1)
+}
+
 /// OSC 2. Terminals that don't support it ignore the sequence.
 fn set_title<W: Write>(out: &mut W, title: &str) -> Result<()> {
     // Strip anything that would terminate the sequence early.
@@ -345,6 +363,7 @@ fn run(args: &Args, s: Settings) -> Result<()> {
     let mut rain = Rain::new(w, h, s.config);
     let mut renderer = Renderer::new(w, h);
 
+    let max_step = max_step(s.frame);
     let mut out = std::io::BufWriter::with_capacity(1 << 18, stdout());
     let mut last = Instant::now();
     let mut last_frame = Instant::now();
@@ -421,8 +440,7 @@ fn run(args: &Args, s: Settings) -> Result<()> {
         }
 
         let now = Instant::now();
-        // Clamp so a stall (laptop sleep, SIGSTOP) doesn't teleport every drop.
-        let dt = (now - last).as_secs_f32().min(0.1);
+        let dt = (now - last).as_secs_f32().min(max_step);
         last = now;
 
         if !paused {
@@ -690,6 +708,52 @@ mod tests {
             "damage was {}",
             m.damage_pct
         );
+    }
+
+    #[test]
+    fn the_step_clamp_never_truncates_an_ordinary_frame() {
+        // The bug this pins: a flat 0.1s clamp sits *below* the frame period
+        // under 10 fps, so every frame was truncated and the rain ran slow.
+        for fps in [1u16, 2, 5, 10, 24, 30, 60, 120, 240] {
+            let frame = Duration::from_secs_f64(1.0 / f64::from(fps));
+            let clamp = max_step(frame);
+            assert!(
+                clamp >= frame.as_secs_f32(),
+                "--fps {fps}: clamp {clamp} truncates a normal {:?} frame",
+                frame
+            );
+        }
+    }
+
+    #[test]
+    fn the_step_clamp_is_unchanged_at_thirty_fps_and_above() {
+        // 3 x (1/30) is exactly 0.1, so the floor takes over at and above the
+        // default rate and behaviour is identical to the old flat clamp.
+        for fps in [30u16, 60, 120, 240] {
+            let frame = Duration::from_secs_f64(1.0 / f64::from(fps));
+            assert_eq!(max_step(frame), 0.1, "--fps {fps} changed behaviour");
+        }
+        // Below 30 it is deliberately looser — three frames rather than a flat
+        // tenth of a second — but never tighter.
+        for fps in [10u16, 24] {
+            let frame = Duration::from_secs_f64(1.0 / f64::from(fps));
+            assert!(
+                max_step(frame) >= 0.1,
+                "--fps {fps} got tighter, not looser"
+            );
+        }
+    }
+
+    #[test]
+    fn the_step_clamp_still_catches_a_real_stall() {
+        // It must not become so loose that a genuine stall teleports the rain.
+        for fps in [5u16, 30, 60] {
+            let frame = Duration::from_secs_f64(1.0 / f64::from(fps));
+            let clamp = max_step(frame);
+            assert!(clamp <= 0.6, "--fps {fps}: clamp {clamp} is too permissive");
+            // A ten-frame stall is abnormal and must still be clamped.
+            assert!(clamp < frame.as_secs_f32() * 10.0);
+        }
     }
 
     #[test]
