@@ -3,7 +3,7 @@
 # unrelated project. Both the binary and the library keep the name `rmatrix`, so
 # nothing about using it changes — only what you type to install it.
 name = "rmatrix-reloaded"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
 description = "Digital rain for modern terminals"
 license = "MIT"
