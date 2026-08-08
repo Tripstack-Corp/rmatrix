@@ -7,13 +7,15 @@
 use anyhow::{Context, Result, bail};
 use clap::Parser;
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
-use crossterm::style::{Attribute, SetAttribute};
+use crossterm::style::{
+    Attribute, Color, Print, SetAttribute, SetBackgroundColor, SetForegroundColor,
+};
 use crossterm::terminal::{
     self, Clear, ClearType, DisableLineWrap, EnableLineWrap, EnterAlternateScreen,
     LeaveAlternateScreen,
 };
-use crossterm::{ExecutableCommand, cursor};
-use rmatrix::{BaseColor, Charset, Config, Depth, Rain, Renderer, Theme};
+use crossterm::{ExecutableCommand, QueueableCommand, cursor};
+use rmatrix::{BaseColor, Charset, Config, Depth, DrawStats, Rain, Renderer, Theme};
 use std::io::{Write, stdout};
 use std::process::ExitCode;
 use std::str::FromStr;
@@ -24,7 +26,7 @@ use std::time::{Duration, Instant};
     name = "rmatrix",
     version,
     about = "Digital rain for modern terminals",
-    after_help = "KEYS:\n  q, Esc, Ctrl-C  quit\n  space           pause\n  1-9             speed\n  r               toggle rainbow\n  c               cycle charset\n  b               toggle bold"
+    after_help = "KEYS:\n  q, Esc, Ctrl-C  quit\n  space           pause\n  1-9             speed\n  r               toggle rainbow\n  c               cycle charset\n  b               toggle bold\n  f               toggle stats overlay"
 )]
 struct Args {
     /// Colour name, #RRGGBB, or "rainbow"
@@ -43,9 +45,19 @@ struct Args {
     #[arg(short = 'S', long, default_value_t = 1.0)]
     speed: f32,
 
-    /// Frame rate cap
-    #[arg(long, default_value_t = 60)]
+    /// Frame rate cap. Output volume scales linearly with this, and the
+    /// terminal — not rmatrix — is what pays for it.
+    #[arg(long, default_value_t = 30)]
     fps: u16,
+
+    /// Brightness steps in the trail. Lower means fewer escape sequences for
+    /// the terminal to parse; 0 disables quantisation.
+    #[arg(long, default_value_t = rmatrix::DEFAULT_LEVELS)]
+    levels: u16,
+
+    /// Start with the stats overlay visible (toggle with `f`)
+    #[arg(long)]
+    stats: bool,
 
     /// Fraction of columns raining at any moment (0.0-1.0)
     #[arg(short = 'd', long, default_value_t = 0.55)]
@@ -177,6 +189,75 @@ fn validate(args: &Args) -> Result<Settings> {
     })
 }
 
+/// Rolling frame-rate and output-volume meter.
+///
+/// Output volume is the number that matters: rmatrix's own CPU is negligible
+/// next to what the terminal spends parsing the escape sequences we emit.
+#[derive(Default)]
+struct Meter {
+    frames: u32,
+    window: Duration,
+    bytes: usize,
+    damaged: usize,
+    fps: f32,
+    bytes_per_frame: f32,
+    damage_pct: f32,
+}
+
+impl Meter {
+    fn record(&mut self, dt: Duration, stats: DrawStats, cells: usize) {
+        self.frames += 1;
+        self.window += dt;
+        self.bytes += stats.bytes;
+        self.damaged += stats.cells_damaged;
+        // Re-average about twice a second: often enough to feel live, rarely
+        // enough that the digits stay readable.
+        if self.window >= Duration::from_millis(500) {
+            let secs = self.window.as_secs_f32().max(f32::EPSILON);
+            self.fps = self.frames as f32 / secs;
+            self.bytes_per_frame = self.bytes as f32 / self.frames as f32;
+            self.damage_pct = if cells == 0 {
+                0.0
+            } else {
+                self.damaged as f32 / (self.frames as usize * cells) as f32 * 100.0
+            };
+            *self = Meter {
+                fps: self.fps,
+                bytes_per_frame: self.bytes_per_frame,
+                damage_pct: self.damage_pct,
+                ..Meter::default()
+            };
+        }
+    }
+
+    fn line(&self) -> String {
+        format!(
+            " {:.0} fps · {:.1} KB/frame · {:.2} MB/s · {:.1}% cells · q quit ",
+            self.fps,
+            self.bytes_per_frame / 1024.0,
+            self.bytes_per_frame * self.fps / 1.0e6,
+            self.damage_pct,
+        )
+    }
+}
+
+/// Painted over the rain each frame, after the renderer has run.
+fn draw_overlay<W: Write>(out: &mut W, w: u16, meter: &Meter) -> Result<()> {
+    let text = meter.line();
+    let trimmed: String = text.chars().take(w as usize).collect();
+    out.queue(cursor::MoveTo(0, 0))?;
+    out.queue(SetAttribute(Attribute::Reset))?;
+    out.queue(SetBackgroundColor(Color::Rgb { r: 0, g: 40, b: 12 }))?;
+    out.queue(SetForegroundColor(Color::Rgb {
+        r: 190,
+        g: 255,
+        b: 200,
+    }))?;
+    out.queue(Print(trimmed))?;
+    out.queue(SetAttribute(Attribute::Reset))?;
+    Ok(())
+}
+
 fn setup(bold: bool) -> Result<()> {
     terminal::enable_raw_mode().context("entering raw mode")?;
     let mut out = stdout();
@@ -217,13 +298,17 @@ fn run(args: &Args, s: Settings) -> Result<()> {
 
     let mut charset_idx = CYCLE.iter().position(|c| *c == args.charset).unwrap_or(0);
     let mut theme = Theme::from_base(s.base, s.rainbow);
+    theme.levels = args.levels;
     let mut bold = args.bold;
     let mut rain = Rain::new(w, h, s.config);
     let mut renderer = Renderer::new(w, h);
 
     let mut out = std::io::BufWriter::with_capacity(1 << 18, stdout());
     let mut last = Instant::now();
+    let mut last_frame = Instant::now();
     let mut paused = false;
+    let mut show_stats = args.stats;
+    let mut meter = Meter::default();
 
     'outer: loop {
         let frame_start = Instant::now();
@@ -267,6 +352,11 @@ fn run(args: &Args, s: Settings) -> Result<()> {
                             out.write_all(if bold { b"\x1b[1m" } else { b"\x1b[22m" })?;
                             renderer.resize(w, h);
                         }
+                        KeyCode::Char('f') => {
+                            show_stats = !show_stats;
+                            // Repaint so the row the overlay occupied comes back.
+                            renderer.resize(w, h);
+                        }
                         _ => {}
                     }
                 }
@@ -289,7 +379,17 @@ fn run(args: &Args, s: Settings) -> Result<()> {
         if !paused {
             rain.step(dt);
         }
-        renderer.draw(&mut out, &rain, &theme, s.depth)?;
+        let stats = renderer.draw(&mut out, &rain, &theme, s.depth)?;
+        meter.record(now - last_frame, stats, w as usize * h as usize);
+        last_frame = now;
+
+        if show_stats {
+            draw_overlay(&mut out, w, &meter)?;
+            // The overlay wrote colour and moved the cursor behind the
+            // renderer's back; without this the next frame paints wrong.
+            renderer.forget_cursor_and_color();
+            out.flush()?;
+        }
     }
 
     drop(out);
@@ -440,5 +540,76 @@ mod tests {
     fn cli_definition_is_internally_consistent() {
         use clap::CommandFactory;
         Args::command().debug_assert();
+    }
+
+    #[test]
+    fn perf_defaults_favour_the_terminal() {
+        // These two defaults exist to keep output volume down; if someone raises
+        // them casually, this test should make them think about it first.
+        let a = args();
+        assert_eq!(a.fps, 30, "fps default drives output volume linearly");
+        assert_eq!(a.levels, rmatrix::DEFAULT_LEVELS);
+        assert!(!a.stats, "the overlay should be opt-in");
+    }
+
+    #[test]
+    fn levels_and_stats_are_settable() {
+        let a = Args::parse_from(["rmatrix", "--levels", "8", "--stats", "--fps", "120"]);
+        assert_eq!(a.levels, 8);
+        assert!(a.stats);
+        assert!(validate(&a).is_ok());
+
+        // 0 is the documented "no quantisation" escape hatch.
+        let a = Args::parse_from(["rmatrix", "--levels", "0"]);
+        assert_eq!(a.levels, 0);
+        assert!(validate(&a).is_ok());
+    }
+
+    #[test]
+    fn meter_reports_zero_before_its_first_window_closes() {
+        let mut m = Meter::default();
+        m.record(
+            Duration::from_millis(10),
+            DrawStats {
+                cells_damaged: 5,
+                bytes: 100,
+            },
+            1000,
+        );
+        assert_eq!(m.fps, 0.0, "should not publish an average from one sample");
+        assert!(m.line().contains("fps"));
+    }
+
+    #[test]
+    fn meter_averages_over_its_window() {
+        let mut m = Meter::default();
+        // 30 frames of 1/30s each = exactly one second, so 30 fps.
+        for _ in 0..30 {
+            m.record(
+                Duration::from_secs_f64(1.0 / 30.0),
+                DrawStats {
+                    cells_damaged: 100,
+                    bytes: 2048,
+                },
+                1000,
+            );
+        }
+        assert!((m.fps - 30.0).abs() < 1.0, "fps was {}", m.fps);
+        assert!((m.bytes_per_frame - 2048.0).abs() < 1.0);
+        assert!(
+            (m.damage_pct - 10.0).abs() < 0.5,
+            "damage was {}",
+            m.damage_pct
+        );
+    }
+
+    #[test]
+    fn meter_survives_a_zero_cell_screen() {
+        let mut m = Meter::default();
+        for _ in 0..30 {
+            m.record(Duration::from_millis(50), DrawStats::default(), 0);
+        }
+        assert_eq!(m.damage_pct, 0.0);
+        assert!(m.line().contains("0.0% cells"));
     }
 }

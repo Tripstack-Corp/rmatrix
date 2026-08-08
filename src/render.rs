@@ -10,6 +10,31 @@ use crossterm::style::{Color, Print, SetForegroundColor};
 use crossterm::{QueueableCommand, cursor};
 use std::io::Write;
 
+/// What one `draw` cost. Surfaced so the caller can show it (see the `f`
+/// overlay) — output volume, not our own CPU, is this program's bottleneck.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct DrawStats {
+    pub cells_damaged: usize,
+    pub bytes: usize,
+}
+
+/// Wraps the real writer just to total up what we emitted.
+struct Counting<W> {
+    inner: W,
+    n: usize,
+}
+
+impl<W: Write> Write for Counting<W> {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        let n = self.inner.write(buf)?;
+        self.n += n;
+        Ok(n)
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.inner.flush()
+    }
+}
+
 pub struct Renderer {
     prev: Vec<Option<(char, Color)>>,
     w: u16,
@@ -31,6 +56,15 @@ impl Renderer {
         }
     }
 
+    /// Call after anything else writes to the screen (an overlay, say). The
+    /// renderer caches the terminal's current colour and cursor position to skip
+    /// redundant escapes; a foreign write invalidates both, and stale caches
+    /// paint the next frame in the wrong colour.
+    pub fn forget_cursor_and_color(&mut self) {
+        self.cur_color = None;
+        self.at = None;
+    }
+
     /// Also the way to force a full repaint: dropping the previous frame makes
     /// every cell count as damaged.
     pub fn resize(&mut self, w: u16, h: u16) {
@@ -47,7 +81,10 @@ impl Renderer {
         rain: &Rain,
         theme: &Theme,
         depth: Depth,
-    ) -> std::io::Result<()> {
+    ) -> std::io::Result<DrawStats> {
+        let mut out = Counting { inner: out, n: 0 };
+        let mut damaged = 0usize;
+
         for y in 0..self.h {
             for x in 0..self.w {
                 let want = rain
@@ -63,10 +100,22 @@ impl Renderer {
                     continue;
                 }
                 *slot = want;
+                damaged += 1;
 
-                if self.at != Some((x, y)) {
-                    out.queue(cursor::MoveTo(x, y))?;
+                // Damaged cells are mostly isolated (the rain is vertical, we
+                // scan by row), so cursor positioning is a real cost. A relative
+                // hop inside the same row is about half the bytes of an absolute
+                // move, so prefer it whenever we're already on the right row.
+                match self.at {
+                    Some((cx, cy)) if cx == x && cy == y => {}
+                    Some((cx, cy)) if cy == y && x > cx => {
+                        out.queue(cursor::MoveRight(x - cx))?;
+                    }
+                    _ => {
+                        out.queue(cursor::MoveTo(x, y))?;
+                    }
                 }
+
                 match want {
                     Some((ch, color)) => {
                         if self.cur_color != Some(color) {
@@ -89,7 +138,11 @@ impl Renderer {
                 };
             }
         }
-        out.flush()
+        out.flush()?;
+        Ok(DrawStats {
+            cells_damaged: damaged,
+            bytes: out.n,
+        })
     }
 }
 
@@ -114,10 +167,15 @@ mod tests {
     }
 
     fn draw(rr: &mut Renderer, rain: &Rain, theme: &Theme) -> Vec<u8> {
+        draw_stats(rr, rain, theme).0
+    }
+
+    fn draw_stats(rr: &mut Renderer, rain: &Rain, theme: &Theme) -> (Vec<u8>, DrawStats) {
         let mut buf = Vec::new();
-        rr.draw(&mut buf, rain, theme, Depth::True)
+        let s = rr
+            .draw(&mut buf, rain, theme, Depth::True)
             .expect("writing to a Vec cannot fail");
-        buf
+        (buf, s)
     }
 
     #[test]
@@ -182,5 +240,75 @@ mod tests {
         let (rain, theme) = scene();
         let mut rr = Renderer::new(0, 0);
         assert!(draw(&mut rr, &rain, &theme).is_empty());
+    }
+
+    #[test]
+    fn stats_report_damage_and_bytes() {
+        let (rain, theme) = scene();
+        let mut rr = Renderer::new(20, 10);
+        let (buf, s) = draw_stats(&mut rr, &rain, &theme);
+        assert_eq!(
+            s.bytes,
+            buf.len(),
+            "byte count disagrees with what was written"
+        );
+        assert!(s.cells_damaged > 0);
+        assert!(s.cells_damaged <= 20 * 10);
+
+        let (_, s2) = draw_stats(&mut rr, &rain, &theme);
+        assert_eq!(
+            s2,
+            DrawStats {
+                cells_damaged: 0,
+                bytes: 0
+            },
+            "clean frame is not free"
+        );
+    }
+
+    #[test]
+    fn quantising_the_ramp_cuts_damage() {
+        // The performance premise: fewer brightness steps means a cell holds its
+        // colour across more frames, so fewer cells are damaged per frame.
+        fn damage_over(levels: u16) -> usize {
+            let mut rain = Rain::new(
+                60,
+                30,
+                Config {
+                    seed: Some(5),
+                    ..Config::default()
+                },
+            );
+            let mut theme = Theme::from_base((0, 255, 65), false);
+            theme.levels = levels;
+            let mut rr = Renderer::new(60, 30);
+            let mut total = 0;
+            for _ in 0..240 {
+                rain.step(1.0 / 60.0);
+                total += draw_stats(&mut rr, &rain, &theme).1.cells_damaged;
+            }
+            total
+        }
+        let coarse = damage_over(8);
+        let fine = damage_over(0); // unquantised
+        assert!(
+            coarse * 2 < fine,
+            "quantising barely helped: {coarse} damaged vs {fine} unquantised"
+        );
+    }
+
+    #[test]
+    fn forgetting_the_cache_reemits_color() {
+        let (rain, theme) = scene();
+        let mut rr = Renderer::new(20, 10);
+        let _ = draw(&mut rr, &rain, &theme);
+        assert!(draw(&mut rr, &rain, &theme).is_empty());
+        // No cells changed, so this alone must not repaint anything...
+        rr.forget_cursor_and_color();
+        assert!(draw(&mut rr, &rain, &theme).is_empty());
+        // ...but the next real change must not assume a stale colour.
+        rr.resize(20, 10);
+        let out = draw(&mut rr, &rain, &theme);
+        assert!(out.windows(7).any(|w| w.starts_with(b"\x1b[38;2;")));
     }
 }

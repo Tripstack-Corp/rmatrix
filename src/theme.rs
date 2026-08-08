@@ -61,6 +61,12 @@ impl Depth {
     }
 }
 
+/// Brightness steps in the ramp. This is a *performance* control as much as a
+/// visual one: a cell only becomes damaged when it crosses a step, so halving
+/// the count roughly halves the escape sequences we hand the terminal. 24 is
+/// already eight times cmatrix's three levels and reads as continuous.
+pub const DEFAULT_LEVELS: u16 = 24;
+
 #[derive(Clone, Copy, Debug)]
 pub struct Theme {
     /// Leading glyph — near-white, tinted toward the body hue.
@@ -70,6 +76,8 @@ pub struct Theme {
     /// The colour a trail decays toward before it is erased.
     pub dim: Rgb,
     pub rainbow: bool,
+    /// Quantisation steps; 0 disables quantisation entirely.
+    pub levels: u16,
 }
 
 impl Theme {
@@ -80,6 +88,7 @@ impl Theme {
             bright: base,
             dim: scale(base, 0.18),
             rainbow,
+            levels: DEFAULT_LEVELS,
         }
     }
 
@@ -104,7 +113,19 @@ impl Theme {
         } else {
             0.0
         };
-        lerp(dim, bright, t.powf(1.7))
+        // Quantise *after* the gamma so the steps are evenly spaced in the
+        // output colour rather than bunched at the dim end.
+        lerp(dim, bright, self.quantise(t.powf(1.7)))
+    }
+
+    /// Snap to the nearest of `levels` steps. Holding a cell's colour steady
+    /// across frames is what stops it generating damage every single frame.
+    fn quantise(&self, t: f32) -> f32 {
+        if self.levels == 0 {
+            return t;
+        }
+        let n = f32::from(self.levels);
+        (t * n).round() / n
     }
 }
 

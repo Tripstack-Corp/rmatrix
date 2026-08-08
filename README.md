@@ -55,7 +55,9 @@ rmatrix [OPTIONS]
   -m, --mutate <RATE>      Glyph churn, screens/sec; 0 disables[default: 0.35]
       --tail-min <ROWS>    Shortest trail                      [default: 6]
       --tail-max <ROWS>    Longest trail                       [default: 26]
-      --fps <N>            Frame rate cap                      [default: 60]
+      --fps <N>            Frame rate cap                      [default: 30]
+      --levels <N>         Brightness steps; 0 = unquantised   [default: 24]
+      --stats              Start with the stats overlay shown
   -b, --bold               Bold glyphs
   -s, --screensaver        Exit on any keypress
       --seed <N>           Replay a specific animation
@@ -63,7 +65,7 @@ rmatrix [OPTIONS]
 ```
 
 Keys while running: `q`/`Esc`/`Ctrl-C` quit, `space` pause, `1`–`9` speed,
-`r` rainbow, `c` cycle charset, `b` bold.
+`r` rainbow, `c` cycle charset, `b` bold, `f` stats overlay.
 
 Some combinations worth knowing:
 
@@ -73,6 +75,41 @@ rmatrix -c binary -C cyan                   # ones and zeroes
 rmatrix -s --fps 30                         # screensaver, easy on the battery
 rmatrix --seed 1337                         # same rain every time
 ```
+
+## Performance
+
+Press `f` for a live overlay: frame rate, bytes per frame, output rate, and the
+percentage of cells repainted.
+
+The thing to understand about a full-screen terminal animation is that **you are
+not the expensive process — the terminal is.** Measured on an M4 Pro at 200×50,
+rmatrix's own simulation costs ~18 µs/frame; the terminal emulator meanwhile has
+to parse and re-render every escape sequence, and that showed up as 87% CPU in
+iTerm2 against 8% for rmatrix.
+
+So the tuning knobs are all about emitting fewer bytes:
+
+| Setting | Effect |
+|---|---|
+| `--levels <N>` | Brightness steps. A cell only repaints when it crosses a step, so this is the biggest lever. `8` is ~4.7× less output than unquantised, and still nearly 3× cmatrix's three levels. |
+| `--fps <N>` | Output scales linearly. |
+| `-d`, `--tail-max` | Fewer/shorter trails means fewer lit cells. |
+
+Measured at 200×50, 600 frames per row:
+
+| `--levels` | bytes/frame | at 30 fps | cells repainted | vs unquantised |
+|---|---|---|---|---|
+| none | 33,071 | 0.99 MB/s | 15.7% | 1.00× |
+| 32 | 16,741 | 0.50 MB/s | 7.9% | 1.98× |
+| **24** (default) | **14,329** | **0.43 MB/s** | **6.8%** | **2.31×** |
+| 16 | 11,164 | 0.33 MB/s | 5.4% | 2.96× |
+| 8 | 6,989 | 0.21 MB/s | 3.5% | 4.73× |
+
+If your terminal still struggles, `--levels 8 --fps 24` cuts output roughly 8×
+against the unquantised 60 fps original and is hard to tell apart in motion.
+
+Reproduce any of this with `cargo run --release --example perf`, which also
+breaks the output down by escape-sequence type.
 
 ## Fonts
 
