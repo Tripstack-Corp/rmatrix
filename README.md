@@ -93,6 +93,56 @@ That font is Basic Latin only — it maps ASCII to Matrix glyphs and has no
 katakana — which is why `-c ascii` is the right pairing. `rmatrix`'s ASCII set is
 `0x21..=0x7A`, entirely within the font's coverage, so no glyph falls back.
 
+## Bind it to a hotkey (iTerm2)
+
+iTerm2 reads *dynamic profiles* from a folder and picks up changes live — no
+restart, and nothing in your existing preferences is touched. Drop this in
+`~/Library/Application Support/iTerm2/DynamicProfiles/matrix.json`:
+
+```json
+{
+  "Profiles": [
+    {
+      "Name": "Matrix",
+      "Guid": "pick-any-stable-unique-string",
+
+      "Custom Command": "Yes",
+      "Command": "/absolute/path/to/rmatrix --tail-max 40 -d 0.75",
+
+      "Has Hotkey": true,
+      "HotKey Key Code": 46,
+      "HotKey Modifier Flags": 1835008,
+      "HotKey Window Reopens On Activation": true,
+      "HotKey Window AutoHides": true,
+
+      "Background Color": {
+        "Color Space": "sRGB",
+        "Red Component": 0.0, "Green Component": 0.0, "Blue Component": 0.0
+      },
+      "Minimum Contrast": 0,
+      "Scrollback Lines": 0,
+      "Silence Bell": true,
+      "Close Sessions On End": true
+    }
+  ]
+}
+```
+
+That binds **⌃⌥⌘M** to a drop-down window running rmatrix; press it again to
+hide. `q` quits, which closes the session.
+
+To choose a different key: `HotKey Key Code` is the macOS virtual key code
+(`M` is 46, `Space` is 49, `J` is 38), and `HotKey Modifier Flags` is the sum of
+shift `131072`, control `262144`, option `524288`, command `1048576` — so
+⌃⌥⌘ is `1835008`. The key names above are the ones iTerm2 actually reads; note
+it is `Has Hotkey`, not "Has Hotkey Window".
+
+Pair it with the movie font by using an absolute path to the binary, setting
+`"Normal Font": "MatrixCodeNFI 14"`, and adding `-c ascii` to the command (see
+[Fonts](#fonts) for why).
+
+Delete the JSON file to remove the profile and its hotkey.
+
 ## Development
 
 ```sh
