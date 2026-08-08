@@ -111,11 +111,43 @@ Measured at 200×50, 600 frames per row:
 | 16 | 11,164 | 0.33 MB/s | 5.4% | 2.96× |
 | 8 | 6,989 | 0.21 MB/s | 3.5% | 4.73× |
 
-If your terminal still struggles, `--levels 8 --fps 24` cuts output roughly 8×
-against the unquantised 60 fps original and is hard to tell apart in motion.
+### Big windows
 
-Reproduce any of this with `cargo run --release --example perf`, which also
-breaks the output down by escape-sequence type.
+Cost scales with cell count, and a full-screen vertical monitor is the worst
+case — 204×175 is 35,700 cells, nine times a stock 80×24. Measured there, over
+600 frames at steady state:
+
+| Settings | bytes/frame | at 30 fps |
+|---|---|---|
+| `-d 0.75 --tail-max 40` (dense, long) | 64,496 | 1.93 MB/s |
+| `--levels 12` added | 42,316 | 1.27 MB/s |
+| `--levels 8` added | 31,530 | 0.95 MB/s |
+| default density/tail, `--levels 12` | 34,347 | 1.03 MB/s |
+
+Density and tail length matter as much as `--levels`: they set how many cells are
+lit at all, and dense-and-long roughly doubles it.
+
+One measurement trap worth knowing if you benchmark this yourself: the slowest
+drops fall at 6 rows/sec, so a 175-row window needs ~29 *seconds* of simulated
+time before the screen is full. Warming up for two seconds measures a half-empty
+screen and flatters every number by about 2×.
+
+### Things that didn't work
+
+Kept here because they look obviously correct and aren't:
+
+- **Column-major scanning.** A column is one drop's fade, so its colours are
+  coherent and the pen should be reusable. It measured ~11% *worse*: at ~7%
+  damage, lit cells are sparse in both axes, so neighbouring cells are rarely
+  both damaged, and scanning by column trades cheap same-row `MoveRight` hops
+  (4.7 bytes) for absolute moves (8.2 bytes).
+- **Dropping glyph churn** (`-m 0`) saves only ~4%. Churn rewrites glyphs but
+  those cells are usually already being repainted for their colour.
+
+Reusing the pen for imperceptible colour deltas *did* pay, but modestly — 6%.
+
+Reproduce any of this with `cargo run --release --example perf`, which breaks
+output down by escape-sequence type and runs the comparisons above.
 
 ## Fonts
 

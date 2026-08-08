@@ -35,13 +35,44 @@ impl<W: Write> Write for Counting<W> {
     }
 }
 
+/// How far the pen colour may drift from the ideal before we re-set it, summed
+/// across R+G+B. Colour changes are ~16 bytes and dominate output; neighbouring
+/// cells in a row are often a hair apart, and re-setting the pen for a
+/// difference nobody can see is pure waste. Error never accumulates: every cell
+/// is within this of the pen, not of its neighbour.
+pub const DEFAULT_COLOR_TOLERANCE: u16 = 12;
+
 pub struct Renderer {
     prev: Vec<Option<(char, Color)>>,
     w: u16,
     h: u16,
     cur_color: Option<Color>,
+    tolerance: u16,
     /// Where the terminal cursor sits after the last write, if known.
     at: Option<(u16, u16)>,
+}
+
+/// Manhattan distance in RGB, for the pen-reuse test. Non-RGB colours (the
+/// 256/16 fallbacks) are already coarse, so they compare exactly.
+fn within(a: Color, b: Color, tol: u16) -> bool {
+    match (a, b) {
+        (
+            Color::Rgb {
+                r: r1,
+                g: g1,
+                b: b1,
+            },
+            Color::Rgb {
+                r: r2,
+                g: g2,
+                b: b2,
+            },
+        ) => {
+            u16::from(r1.abs_diff(r2)) + u16::from(g1.abs_diff(g2)) + u16::from(b1.abs_diff(b2))
+                <= tol
+        }
+        _ => a == b,
+    }
 }
 
 impl Renderer {
@@ -52,8 +83,14 @@ impl Renderer {
             w,
             h,
             cur_color: None,
+            tolerance: DEFAULT_COLOR_TOLERANCE,
             at: None,
         }
+    }
+
+    /// 0 re-sets the pen for any colour change at all.
+    pub fn set_color_tolerance(&mut self, tolerance: u16) {
+        self.tolerance = tolerance;
     }
 
     /// Call after anything else writes to the screen (an overlay, say). The
@@ -85,6 +122,12 @@ impl Renderer {
         let mut out = Counting { inner: out, n: 0 };
         let mut damaged = 0usize;
 
+        // Row-major. Column-major looks tempting — a column is one drop's fade,
+        // so its colours are coherent and the pen could be reused — but it
+        // measures ~11% worse. At ~7% damage, lit cells are sparse in *both*
+        // axes, so neighbour coherence almost never applies, and scanning by
+        // column trades cheap same-row `MoveRight` hops for absolute moves
+        // (4.7 -> 8.2 bytes each). Measured, not assumed; see examples/perf.rs.
         for y in 0..self.h {
             for x in 0..self.w {
                 let want = rain
@@ -102,12 +145,17 @@ impl Renderer {
                 *slot = want;
                 damaged += 1;
 
-                // Damaged cells are mostly isolated (the rain is vertical, we
-                // scan by row), so cursor positioning is a real cost. A relative
-                // hop inside the same row is about half the bytes of an absolute
-                // move, so prefer it whenever we're already on the right row.
+                // Cursor positioning is a fifth of all output, so the cheap
+                // cases are worth spelling out.
                 match self.at {
                     Some((cx, cy)) if cx == x && cy == y => {}
+                    // Printing left us one cell to the right and we want the row
+                    // below: backspace + line feed is 2 bytes against ~10 for an
+                    // absolute move. Safe from scrolling because cy is at most
+                    // h-2 here, and raw mode clears OPOST so LF is a bare feed.
+                    Some((cx, cy)) if cx == x + 1 && cy + 1 == y => {
+                        out.write_all(b"\x08\n")?;
+                    }
                     Some((cx, cy)) if cy == y && x > cx => {
                         out.queue(cursor::MoveRight(x - cx))?;
                     }
@@ -118,7 +166,10 @@ impl Renderer {
 
                 match want {
                     Some((ch, color)) => {
-                        if self.cur_color != Some(color) {
+                        if !self
+                            .cur_color
+                            .is_some_and(|pen| within(pen, color, self.tolerance))
+                        {
                             out.queue(SetForegroundColor(color))?;
                             self.cur_color = Some(color);
                         }
@@ -295,6 +346,71 @@ mod tests {
             coarse * 2 < fine,
             "quantising barely helped: {coarse} damaged vs {fine} unquantised"
         );
+    }
+
+    #[test]
+    fn pen_tolerance_saves_bytes_without_changing_damage() {
+        // Reusing the pen for an imperceptible colour delta must reduce output
+        // but must never change *which* cells we consider damaged.
+        fn run(tol: u16) -> (usize, usize) {
+            let mut rain = Rain::new(
+                80,
+                40,
+                Config {
+                    seed: Some(9),
+                    ..Config::default()
+                },
+            );
+            let theme = Theme::from_base((0, 255, 65), false);
+            let mut rr = Renderer::new(80, 40);
+            rr.set_color_tolerance(tol);
+            let (mut bytes, mut dmg) = (0, 0);
+            for _ in 0..300 {
+                rain.step(1.0 / 60.0);
+                let s = draw_stats(&mut rr, &rain, &theme).1;
+                bytes += s.bytes;
+                dmg += s.cells_damaged;
+            }
+            (bytes, dmg)
+        }
+        let (loose_bytes, loose_dmg) = run(DEFAULT_COLOR_TOLERANCE);
+        let (strict_bytes, strict_dmg) = run(0);
+        assert_eq!(loose_dmg, strict_dmg, "tolerance changed the damage set");
+        assert!(
+            loose_bytes < strict_bytes,
+            "tolerance cost bytes instead of saving them: {loose_bytes} vs {strict_bytes}"
+        );
+    }
+
+    #[test]
+    fn near_identical_colors_are_within_tolerance() {
+        let a = Color::Rgb {
+            r: 0,
+            g: 200,
+            b: 50,
+        };
+        assert!(within(
+            a,
+            Color::Rgb {
+                r: 0,
+                g: 204,
+                b: 52
+            },
+            12
+        ));
+        assert!(!within(
+            a,
+            Color::Rgb {
+                r: 0,
+                g: 230,
+                b: 50
+            },
+            12
+        ));
+        assert!(within(a, a, 0), "a colour must always match itself");
+        // Palette colours are already coarse; they compare exactly.
+        assert!(within(Color::AnsiValue(40), Color::AnsiValue(40), 99));
+        assert!(!within(Color::AnsiValue(40), Color::AnsiValue(41), 99));
     }
 
     #[test]

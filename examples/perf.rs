@@ -5,11 +5,22 @@
 //! parse and re-render every escape sequence we emit, so output volume shows up
 //! as *its* CPU, not ours.
 
-use rmatrix::{Config, Depth, Rain, Renderer, Theme};
+use rmatrix::{Config, DEFAULT_COLOR_TOLERANCE, Depth, Rain, Renderer, Theme};
 use std::time::Instant;
 
 const FRAMES: usize = 600;
 const DT: f32 = 1.0 / 60.0;
+
+/// Frames needed before the screen is actually full.
+///
+/// This matters more than it looks: the slowest drops fall at 6 rows/sec, so a
+/// 175-row window takes ~29 seconds of simulated time to reach steady state.
+/// Warming up for a fixed 2 seconds measures a half-empty screen and flatters
+/// every number by roughly 2x.
+fn warmup_frames(h: u16) -> usize {
+    // rows / slowest-speed, in frames, with headroom.
+    ((f32::from(h) / 6.0 / DT) * 1.3) as usize
+}
 
 fn main() {
     println!(
@@ -31,7 +42,7 @@ fn main() {
         let theme = Theme::from_base((0, 255, 65), false);
 
         // Warm up so we measure steady state, not an empty screen.
-        for _ in 0..120 {
+        for _ in 0..warmup_frames(h) {
             rain.step(DT);
         }
         let mut sink = Vec::with_capacity(1 << 22);
@@ -73,6 +84,8 @@ fn main() {
     levels_sweep();
     println!();
     breakdown();
+    println!();
+    ab();
 }
 
 /// `levels = 0` is the unquantised ramp, i.e. the original behaviour.
@@ -97,7 +110,7 @@ fn levels_sweep() {
         let mut theme = Theme::from_base((0, 255, 65), false);
         theme.levels = levels;
         let mut rr = Renderer::new(w, h);
-        for _ in 0..120 {
+        for _ in 0..warmup_frames(h) {
             rain.step(DT);
         }
         let mut sink = Vec::with_capacity(1 << 22);
@@ -144,14 +157,14 @@ fn breakdown() {
     );
     let mut rr = Renderer::new(w, h);
     let theme = Theme::from_base((0, 255, 65), false);
-    for _ in 0..120 {
+    for _ in 0..warmup_frames(h) {
         rain.step(DT);
     }
     let mut sink = Vec::with_capacity(1 << 22);
     let _ = rr.draw(&mut sink, &rain, &theme, Depth::True);
 
     let (mut sgr, mut moves, mut glyphs, mut sgr_n, mut move_n) = (0usize, 0, 0, 0, 0);
-    for _ in 0..120 {
+    for _ in 0..FRAMES {
         rain.step(DT);
         sink.clear();
         let _ = rr.draw(&mut sink, &rain, &theme, Depth::True);
@@ -198,4 +211,102 @@ fn breakdown() {
         glyphs,
         glyphs as f64 / total * 100.0
     );
+}
+
+/// Isolates two things I guessed at and had to measure: whether reusing the pen
+/// for imperceptible colour deltas pays, and what glyph churn costs.
+fn ab() {
+    let (w, h) = (204u16, 175u16); // a full-screen vertical window
+    println!("at {w}x{h} (full-screen vertical), 600 frames:");
+    println!("{:>34} {:>11} {:>10}", "variant", "bytes/f", "MB/s@30");
+    for (label, tol, mutate, levels, density, tail) in [
+        (
+            "profile as shipped",
+            DEFAULT_COLOR_TOLERANCE,
+            0.35,
+            24u16,
+            0.75,
+            40.0,
+        ),
+        ("  + no pen tolerance", 0, 0.35, 24, 0.75, 40.0),
+        (
+            "  + no glyph churn (-m 0)",
+            DEFAULT_COLOR_TOLERANCE,
+            0.0,
+            24,
+            0.75,
+            40.0,
+        ),
+        (
+            "same look, levels 12",
+            DEFAULT_COLOR_TOLERANCE,
+            0.35,
+            12,
+            0.75,
+            40.0,
+        ),
+        (
+            "same look, levels 8",
+            DEFAULT_COLOR_TOLERANCE,
+            0.35,
+            8,
+            0.75,
+            40.0,
+        ),
+        (
+            "default density/tail",
+            DEFAULT_COLOR_TOLERANCE,
+            0.35,
+            24,
+            0.55,
+            26.0,
+        ),
+        (
+            "  + levels 12",
+            DEFAULT_COLOR_TOLERANCE,
+            0.35,
+            12,
+            0.55,
+            26.0,
+        ),
+        (
+            "  + levels 12, -m 0.1",
+            DEFAULT_COLOR_TOLERANCE,
+            0.1,
+            12,
+            0.55,
+            26.0,
+        ),
+    ] {
+        let mut rain = Rain::new(
+            w,
+            h,
+            Config {
+                seed: Some(1),
+                mutate,
+                density,
+                tail_max: tail,
+                ..Config::default()
+            },
+        );
+        let mut theme = Theme::from_base((0, 255, 65), false);
+        theme.levels = levels;
+        let mut rr = Renderer::new(w, h);
+        rr.set_color_tolerance(tol);
+        for _ in 0..warmup_frames(h) {
+            rain.step(DT);
+        }
+        let mut sink = Vec::with_capacity(1 << 23);
+        let _ = rr.draw(&mut sink, &rain, &theme, Depth::True);
+        let mut bytes = 0usize;
+        for _ in 0..FRAMES {
+            rain.step(DT);
+            sink.clear();
+            if let Ok(s) = rr.draw(&mut sink, &rain, &theme, Depth::True) {
+                bytes += s.bytes;
+            }
+        }
+        let bpf = bytes as f64 / FRAMES as f64;
+        println!("{:>34} {:>11.0} {:>9.2}M", label, bpf, bpf * 30.0 / 1e6);
+    }
 }
