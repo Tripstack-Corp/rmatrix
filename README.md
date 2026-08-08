@@ -70,11 +70,20 @@ Keys while running: `q`/`Esc`/`Ctrl-C` quit, `space` pause, `1`–`9` speed,
 Some combinations worth knowing:
 
 ```sh
+# The one to start with on a big screen: dense and long-tailed, but with
+# brightness quantised hard enough that the terminal keeps up. See Performance.
+rmatrix --tail-max 40 -d 0.75 --levels 8
+
 rmatrix -C '#00ff41' --tail-max 40 -d 0.8   # dense, long, film-green
 rmatrix -c binary -C cyan                   # ones and zeroes
-rmatrix -s --fps 30                         # screensaver, easy on the battery
+rmatrix -s                                  # screensaver, exits on a keypress
 rmatrix --seed 1337                         # same rain every time
 ```
+
+The stock defaults are tuned for an ordinary window. If you run full screen —
+especially on a tall or vertical monitor — go straight to the
+[recommended settings](#recommended-settings) below; the defaults will work but
+they make the terminal do several times more work than it needs to.
 
 ## Performance
 
@@ -97,7 +106,7 @@ So the tuning knobs are all about emitting fewer bytes:
 
 | Setting | Effect |
 |---|---|
-| `--levels <N>` | Brightness steps. A cell only repaints when it crosses a step, so this is the biggest lever. `8` is ~4.7× less output than unquantised, and still nearly 3× cmatrix's three levels. |
+| `--levels <N>` | Brightness steps. A cell only repaints when it crosses a step, so this is the biggest lever. `8` is ~4.2× less output than unquantised, and still nearly 3× cmatrix's three levels. |
 | `--fps <N>` | Output scales linearly. |
 | `-d`, `--tail-max` | Fewer/shorter trails means fewer lit cells. |
 
@@ -105,11 +114,30 @@ Measured at 200×50, 600 frames per row:
 
 | `--levels` | bytes/frame | at 30 fps | cells repainted | vs unquantised |
 |---|---|---|---|---|
-| none | 33,071 | 0.99 MB/s | 15.7% | 1.00× |
-| 32 | 16,741 | 0.50 MB/s | 7.9% | 1.98× |
-| **24** (default) | **14,329** | **0.43 MB/s** | **6.8%** | **2.31×** |
-| 16 | 11,164 | 0.33 MB/s | 5.4% | 2.96× |
-| 8 | 6,989 | 0.21 MB/s | 3.5% | 4.73× |
+| none | 31,542 | 0.95 MB/s | 17.7% | 1.00× |
+| 64 | 22,699 | 0.68 MB/s | 11.8% | 1.39× |
+| 32 | 17,253 | 0.52 MB/s | 8.7% | 1.83× |
+| **24** (default) | **14,497** | **0.43 MB/s** | **7.4%** | **2.18×** |
+| 16 | 12,015 | 0.36 MB/s | 5.8% | 2.63× |
+| 8 | 7,461 | 0.22 MB/s | 3.8% | 4.23× |
+
+### Recommended settings
+
+`--levels` defaults to 24, which is right for an ordinary window and deliberately
+conservative. The larger your terminal, the more it pays to turn it down — and
+the less you can see that you have, because a longer tail spreads the same number
+of steps over more rows.
+
+| Window | Suggested | Why |
+|---|---|---|
+| Up to ~80×50 | defaults | Already well under 0.5 MB/s. |
+| ~200×50 | `--levels 12` | Roughly halves output; no visible change. |
+| Full screen / vertical | `--tail-max 40 -d 0.75 --levels 8` | ~0.95 MB/s at 204×175, versus 1.93 for the same look at the default 24. |
+| Still struggling | add `--fps 24` | A further ~20%, linearly. |
+
+Turn `--levels` back up if you see the tails step rather than fade. Long tails
+hide low level counts well: at `--tail-max 40`, `--levels 8` puts a step every
+five rows.
 
 ### Big windows
 
@@ -161,7 +189,7 @@ For the actual mirrored glyphs from the movie, install the free
 your terminal's font, and run:
 
 ```sh
-rmatrix -c ascii
+rmatrix -c ascii --tail-max 40 -d 0.75 --levels 8
 ```
 
 That font is Basic Latin only — it maps ASCII to Matrix glyphs and has no
@@ -182,7 +210,7 @@ restart, and nothing in your existing preferences is touched. Drop this in
       "Guid": "pick-any-stable-unique-string",
 
       "Custom Command": "Yes",
-      "Command": "/absolute/path/to/rmatrix --tail-max 40 -d 0.75",
+      "Command": "/absolute/path/to/rmatrix --tail-max 40 -d 0.75 --levels 8",
 
       "Has Hotkey": true,
       "HotKey Key Code": 46,
