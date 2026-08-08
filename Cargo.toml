@@ -23,7 +23,7 @@ path = "src/lib.rs"
 
 [[bin]]
 name = "rmatrix"
-path = "src/main.rs"
+path = "src/bin/rmatrix/main.rs"
 
 [dependencies]
 anyhow = "1.0.104"
