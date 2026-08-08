@@ -64,15 +64,12 @@ jobs:
           cp "target/${{ matrix.target }}/release/rmatrix" "dist/${name}/"
           cp README.md LICENSE "dist/${name}/"
           tar -czf "dist/${name}.tar.gz" -C dist "${name}"
-          # Homebrew needs these; compute them here so the formula can be
-          # updated straight from the release without re-downloading.
-          shasum -a 256 "dist/${name}.tar.gz" > "dist/${name}.tar.gz.sha256"
           echo "archive=dist/${name}.tar.gz" >> "$GITHUB_OUTPUT"
 
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.target }}
-          path: dist/*.tar.gz*
+          path: dist/*.tar.gz
           if-no-files-found: error
 
   release:
@@ -86,13 +83,17 @@ jobs:
           path: dist
           merge-multiple: true
 
+      # Checksum the artifacts here, over the exact files being published, rather
+      # than transporting per-target sums and rewriting their paths. Rewriting is
+      # how the first attempt shipped a SHA256SUMS with a single space separator,
+      # which no checksum tool will parse even though the hashes were right.
       - name: Collect checksums
         run: |
           set -euo pipefail
           cd dist
-          cat *.sha256 | sed 's| .*/| |' > SHA256SUMS
-          rm -f *.sha256
-          echo "--- SHA256SUMS ---"
+          shasum -a 256 *.tar.gz > SHA256SUMS
+          # Fail loudly rather than publishing an unverifiable file again.
+          shasum -a 256 -c SHA256SUMS
           cat SHA256SUMS
 
       - name: Publish release

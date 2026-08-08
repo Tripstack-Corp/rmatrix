@@ -28,14 +28,41 @@ rmatrix targets what terminals can actually do now:
 
 ## Install
 
+### Homebrew
+
+```sh
+brew install Tripstack-Corp/tap/rmatrix
+```
+
+Prebuilt binaries for macOS and Linux, arm64 and x86_64 — no toolchain, nothing
+to compile. Upgrade with `brew update && brew upgrade rmatrix`.
+
+To track `main` instead of the latest release (this one does build from source,
+so it needs Rust):
+
+```sh
+brew install --HEAD Tripstack-Corp/tap/rmatrix
+```
+
+### Prebuilt binary
+
+Grab a tarball from [Releases](https://github.com/Tripstack-Corp/rmatrix/releases)
+and put `rmatrix` somewhere on your `PATH`. Each release ships `SHA256SUMS`:
+
+```sh
+shasum -a 256 -c SHA256SUMS --ignore-missing
+```
+
+### With cargo
+
 ```sh
 cargo install --git https://github.com/Tripstack-Corp/rmatrix
 ```
 
-> Note: don't `cargo install rmatrix` from crates.io — that name belongs to an
+> Don't `cargo install rmatrix` from crates.io — that name belongs to an
 > unrelated project.
 
-Or from a clone:
+### From a clone
 
 ```sh
 cargo build --release && cp target/release/rmatrix ~/.local/bin/
