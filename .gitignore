@@ -1,4 +1,10 @@
 /target
 
-# Agent worktrees created by Claude Code
-.claude/worktrees/
+# Claude Code's directory: agent worktrees, status hooks, and local permission
+# grants. Superseding the narrower .claude/worktrees/ rule — none of it is
+# project configuration a contributor needs, and settings.local.json in
+# particular is per-machine by design.
+.claude/
+
+# spyc writes a per-session context file into the repo root.
+.spyc*
