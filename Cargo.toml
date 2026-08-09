@@ -13,7 +13,10 @@ keywords = ["matrix", "terminal", "tui", "screensaver", "cli"]
 categories = ["command-line-utilities"]
 # examples/perf.rs ships: the README tells people to run it to reproduce the
 # performance numbers, and a claim you can't check is worth less.
-exclude = [".github/", "scripts/"]
+# docs/ is excluded because it is several megabytes of demo video, which every
+# `cargo install` would otherwise download. The README references it by absolute
+# URL so it still renders on crates.io.
+exclude = [".github/", "scripts/", "docs/"]
 
 # Keeping the library named `rmatrix` means every `use rmatrix::...` in the
 # binary, tests and examples stays as it is.

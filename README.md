@@ -6,6 +6,10 @@ Digital rain for modern terminals. Written in Rust, no ncurses.
 [![CI](https://github.com/Tripstack-Corp/rmatrix/actions/workflows/ci.yml/badge.svg)](https://github.com/Tripstack-Corp/rmatrix/actions/workflows/ci.yml)
 [![license](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
+![rmatrix running in a terminal](https://raw.githubusercontent.com/Tripstack-Corp/rmatrix/main/docs/demo.gif)
+
+<sub>Defaults, no flags. ([Sharper MP4](docs/demo.mp4) — GitHub will not play video inline in a README.)</sub>
+
 ```sh
 rmatrix
 ```
@@ -319,6 +323,11 @@ your terminal's font, and run:
 ```sh
 rmatrix -c ascii --tail-max 40 -d 0.75
 ```
+
+![rmatrix in the Matrix Code NFI font](https://raw.githubusercontent.com/Tripstack-Corp/rmatrix/main/docs/font.gif)
+
+<sub>The same program as the clip at the top, in Matrix Code NFI. Note the
+mirrored letterforms — that is the font, not the charset. ([MP4](docs/font.mp4))</sub>
 
 That font is Basic Latin only — it maps ASCII to Matrix glyphs and has no
 katakana — which is why `-c ascii` is the right pairing. `rmatrix`'s ASCII set is
