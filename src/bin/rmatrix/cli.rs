@@ -15,7 +15,7 @@ use std::time::Duration;
     name = "rmatrix",
     version,
     about = "Digital rain for modern terminals",
-    after_help = "KEYS:\n  q, Esc, Ctrl-C  quit\n  space           pause\n  1-9             speed\n  r               toggle rainbow\n  c               cycle charset\n  b               toggle bold\n  f               toggle stats overlay"
+    after_help = "KEYS:\n  q, Esc, Ctrl-C  quit\n  space           pause\n  1-9             speed (3 = normal, 1 = 1/3x, 9 = 3x)\n  r               toggle rainbow\n  c               cycle charset\n  b               toggle bold\n  f               toggle stats overlay"
 )]
 pub(crate) struct Args {
     /// Colour name, #RRGGBB, or "rainbow"
@@ -35,7 +35,12 @@ pub(crate) struct Args {
     #[arg(long, default_value = "")]
     pub(crate) custom: String,
 
-    /// Overall speed multiplier
+    /// Overall speed multiplier — below 1 is slower, above 1 is faster
+    ///
+    /// Continuous, and bounded only by its sign: any positive value is
+    /// accepted. For slow motion, `0.4` is about as slow as cmatrix goes
+    /// (`-u 10` against its default `-u 4`) and there is nothing special
+    /// about that number — `0.05` is a crawl and equally valid.
     #[arg(short = 'S', long, default_value_t = 1.0)]
     pub(crate) speed: f32,
 

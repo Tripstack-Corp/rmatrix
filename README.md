@@ -93,7 +93,7 @@ rmatrix [OPTIONS]
   -c, --charset <SET>      classic | katakana | ascii | alnum | binary | hex |
                            greek | symbols | custom            [default: classic]
       --custom <GLYPHS>    Glyphs to use with `--charset custom`
-  -S, --speed <MUL>        Overall speed multiplier            [default: 1]
+  -S, --speed <MUL>        Speed multiplier; <1 is slow motion [default: 1]
   -d, --density <0..1>     Fraction of columns raining         [default: 0.55]
   -m, --mutate <RATE>      Glyph churn, screens/sec; 0 disables[default: 0.35]
       --tail-min <ROWS>    Shortest trail                      [default: 6]
@@ -108,8 +108,9 @@ rmatrix [OPTIONS]
       --color-depth <D>    auto | truecolor | 256 | 16         [default: auto]
 ```
 
-Keys while running: `q`/`Esc`/`Ctrl-C` quit, `space` pause, `1`–`9` speed,
-`r` rainbow, `c` cycle charset, `b` bold, `f` stats overlay.
+Keys while running: `q`/`Esc`/`Ctrl-C` quit, `space` pause, `1`–`9` speed
+(`3` is normal, so `1` and `2` are slower than default), `r` rainbow,
+`c` cycle charset, `b` bold, `f` stats overlay.
 
 Some combinations worth knowing:
 
@@ -120,6 +121,7 @@ rmatrix --tail-max 40 -d 0.75
 
 rmatrix -C '#00ff41' --tail-max 40 -d 0.8   # dense, long, film-green
 rmatrix -c binary -C cyan                   # ones and zeroes
+rmatrix -S 0.4                              # slow motion; -S 0.05 is a crawl
 rmatrix -s                                  # screensaver, exits on a keypress
 rmatrix --seed 1337                         # same rain every time
 ```
