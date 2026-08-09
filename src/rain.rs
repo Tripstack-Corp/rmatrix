@@ -129,6 +129,17 @@ impl Rain {
         self.h
     }
 
+    /// The multiplier actually applied to elapsed time: the configured
+    /// `speed` and the live [`speed_mul`](Self::speed_mul) combined.
+    ///
+    /// `step` reads it from here rather than multiplying the two inline so a
+    /// caller that *displays* the speed cannot disagree with the one that
+    /// applies it. The stats overlay is such a caller.
+    #[must_use]
+    pub fn speed(&self) -> f32 {
+        self.speed_mul * self.cfg.speed
+    }
+
     pub fn set_glyphs(&mut self, glyphs: Vec<char>) {
         self.cfg.glyphs = glyphs;
     }
@@ -167,7 +178,7 @@ impl Rain {
             return;
         }
         self.elapsed += dt;
-        let dt_s = (dt * self.speed_mul * self.cfg.speed).max(0.0);
+        let dt_s = (dt * self.speed()).max(0.0);
         if dt_s == 0.0 {
             return;
         }
@@ -321,16 +332,21 @@ mod tests {
         }
     }
 
+    /// A comparable snapshot of every cell.
+    fn snapshot(r: &Rain) -> Vec<Cell> {
+        (0..r.height())
+            .flat_map(|y| (0..r.width()).map(move |x| (x, y)))
+            .map(|(x, y)| *r.cell(x, y).expect("in bounds by construction"))
+            .collect()
+    }
+
     /// Advance a grid and return a comparable snapshot of every cell.
     fn run(w: u16, h: u16, cfg: Config, frames: usize) -> Vec<Cell> {
         let mut r = Rain::new(w, h, cfg);
         for _ in 0..frames {
             r.step(1.0 / 60.0);
         }
-        (0..h)
-            .flat_map(|y| (0..w).map(move |x| (x, y)))
-            .map(|(x, y)| *r.cell(x, y).expect("in bounds by construction"))
-            .collect()
+        snapshot(&r)
     }
 
     #[test]
@@ -345,6 +361,57 @@ mod tests {
         let a = run(40, 20, cfg(7), 120);
         let b = run(40, 20, cfg(8), 120);
         assert_ne!(a, b);
+    }
+
+    #[test]
+    fn the_reported_speed_is_the_one_step_applies() {
+        // The stats overlay prints `Rain::speed`. The moment that stops
+        // agreeing with the multiplier inside `step`, the readout becomes a
+        // plausible lie — the worst kind, because nothing looks broken. Both
+        // now read the same accessor; this pins that they keep doing so.
+        let mut r = Rain::new(
+            40,
+            20,
+            Config {
+                speed: 0.5,
+                ..cfg(7)
+            },
+        );
+        r.speed_mul = 0.5;
+        assert!((r.speed() - 0.25).abs() < 1e-6, "speed() was {}", r.speed());
+
+        // Driven, not merely read: at zero effective speed the grid must not
+        // move, while `elapsed` keeps tracking real time because it drives the
+        // rainbow rotation rather than the rain.
+        r.speed_mul = 0.0;
+        let before = snapshot(&r);
+        r.step(1.0);
+        assert_eq!(snapshot(&r), before, "zero speed must freeze the rain");
+        assert!((r.elapsed - 1.0).abs() < 1e-6, "elapsed was {}", r.elapsed);
+    }
+
+    #[test]
+    fn speed_only_ever_scales_the_clock() {
+        // Half speed for twice as long lands exactly where full speed for half
+        // the time does. That equivalence is what lets `--speed 0.4` be sold as
+        // "the same rain, slower" rather than a different animation.
+        //
+        // One step each, rather than a loop: both runs then draw from the RNG
+        // the same number of times, so the seeds stay comparable. Stepping at
+        // different dt would change the draw count and compare two different
+        // realisations — see CLAUDE.md under Performance.
+        let mut slow = Rain::new(
+            40,
+            20,
+            Config {
+                speed: 0.5,
+                ..cfg(11)
+            },
+        );
+        let mut fast = Rain::new(40, 20, cfg(11));
+        slow.step(2.0);
+        fast.step(1.0);
+        assert_eq!(snapshot(&slow), snapshot(&fast));
     }
 
     #[test]

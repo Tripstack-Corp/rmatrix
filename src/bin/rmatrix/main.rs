@@ -29,7 +29,7 @@ use std::time::Instant;
 use bench::{BENCH_PRIME_TICKS, Bench};
 use cli::{Args, CYCLE, Settings, validate};
 use keys::Repeat;
-use meter::{Meter, draw_overlay, set_title};
+use meter::{Meter, Readout, draw_overlay, set_title};
 use term::{Sink, restore, restore_sequence, setup};
 
 fn main() -> ExitCode {
@@ -210,20 +210,16 @@ fn run(args: &Args, s: Settings) -> Result<()> {
             last_frame = now;
 
             if show_stats {
-                draw_overlay(
-                    &mut buf,
-                    w,
-                    &meter,
-                    theme.levels,
-                    args.levels == Levels::Auto,
-                )?;
+                let readout = Readout {
+                    levels: theme.levels,
+                    auto: args.levels == Levels::Auto,
+                    speed: rain.speed(),
+                };
+                draw_overlay(&mut buf, w, &meter, readout)?;
                 // Only on refresh: retitling every frame is pointless churn, and
                 // some terminals flash the title bar when it changes.
                 if refreshed {
-                    set_title(
-                        &mut buf,
-                        &meter.title(theme.levels, args.levels == Levels::Auto),
-                    )?;
+                    set_title(&mut buf, &meter.title(readout))?;
                 }
                 // The overlay wrote colour and moved the cursor behind the
                 // renderer's back; without this the next frame paints wrong.

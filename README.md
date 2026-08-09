@@ -132,9 +132,9 @@ left to you, since they are taste rather than cost.
 
 ## Performance
 
-Press `f` for a live readout: frame rate, bytes per frame, output rate, and the
-percentage of cells repainted. It appears in two places — a bar across the top
-row, **and the window title**.
+Press `f` for a live readout: frame rate, the speed multiplier currently in
+effect, bytes per frame, output rate, and the percentage of cells repainted. It
+appears in two places — a bar across the top row, **and the window title**.
 
 The title is not redundant. If you pair `-c ascii` with a font that remaps ASCII
 to glyphs (see [Fonts](#fonts)), anything drawn into the terminal grid is remapped
