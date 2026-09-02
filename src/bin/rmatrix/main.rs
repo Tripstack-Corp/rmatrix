@@ -22,7 +22,7 @@ use anyhow::{Context, Result, bail};
 use clap::Parser;
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use crossterm::terminal;
-use rmatrix::{Levels, Rain, Renderer, Theme};
+use rmatrix::{DEFAULT_TERMINAL_PALETTE, Levels, Rain, Renderer, Theme};
 use std::process::ExitCode;
 use std::time::Instant;
 
@@ -60,13 +60,16 @@ fn run(args: &Args, s: Settings) -> Result<()> {
         default_hook(info);
     }));
 
-    setup(args.bold)?;
+    let terminal_palette = setup(args.bold, s.terminal)?;
 
     let (tw, th) = terminal::size().context("querying terminal size")?;
     let (mut w, mut h) = (tw.max(1), th.max(1));
 
     let mut charset_idx = CYCLE.iter().position(|c| *c == args.charset).unwrap_or(0);
     let mut theme = Theme::from_base(s.base, s.rainbow);
+    theme.terminal_palette = s
+        .terminal
+        .then_some(terminal_palette.unwrap_or(DEFAULT_TERMINAL_PALETTE));
     theme.levels = args.levels.resolve(w, h);
     let mut bold = args.bold;
     let mut rain = Rain::new(w, h, s.config);
@@ -141,6 +144,7 @@ fn run(args: &Args, s: Settings) -> Result<()> {
                             rain.speed_mul = f32::from(d as u8 - b'0') / 3.0;
                         }
                         KeyCode::Char('r') => {
+                            theme.terminal_palette = None;
                             theme.rainbow = !theme.rainbow;
                             renderer.resize(w, h); // force a full repaint
                         }

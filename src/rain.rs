@@ -151,8 +151,8 @@ impl Rain {
         self.h = h;
         self.cells = vec![Cell::default(); w as usize * h as usize];
         self.cols = Vec::with_capacity(w as usize);
-        for x in 0..w as usize {
-            let hue = x as f32 / f32::from(w.max(1));
+        for _ in 0..w as usize {
+            let hue = self.rng.random::<f32>();
             self.cols.push(Column {
                 drops: Vec::new(),
                 // Stagger the start so the first frame isn't one flat wave.
@@ -308,7 +308,8 @@ impl Rain {
         if c.glow <= 0.0 {
             return None;
         }
-        let hue = self.cols.get(x as usize).map_or(0.0, |c| c.hue) + self.elapsed * 0.08;
+        let hue = self.cols.get(x as usize).map_or(0.0, |c| c.hue)
+            + if theme.rainbow { self.elapsed * 0.08 } else { 0.0 };
         Some((c.ch, theme.color(c.glow, c.head, hue)))
     }
 }
@@ -361,6 +362,42 @@ mod tests {
         let a = run(40, 20, cfg(7), 120);
         let b = run(40, 20, cfg(8), 120);
         assert_ne!(a, b);
+    }
+
+    #[test]
+    fn terminal_colors_are_stable_per_column_and_vary_across_columns() {
+        let mut r = Rain::new(
+            40,
+            20,
+            Config {
+                density: 1.0,
+                ..cfg(7)
+            },
+        );
+        let mut theme = Theme::from_base((0, 255, 65), false);
+        theme.terminal_palette = Some(crate::theme::DEFAULT_TERMINAL_PALETTE);
+        for _ in 0..300 {
+            r.step(1.0 / 60.0);
+        }
+
+        let colors: std::collections::BTreeSet<String> = (0..r.width())
+            .filter_map(|x| {
+                (0..r.height()).find_map(|y| {
+                    r.color_of(x, y, &theme)
+                        .map(|(_, color)| format!("{color:?}"))
+                })
+            })
+            .collect();
+        assert!(colors.len() >= 4, "columns only used {colors:?}");
+
+        let before: Vec<_> = (0..r.width())
+            .map(|x| (0..r.height()).find_map(|y| r.color_of(x, y, &theme).map(|v| v.1)))
+            .collect();
+        r.elapsed += 100.0;
+        let after: Vec<_> = (0..r.width())
+            .map(|x| (0..r.height()).find_map(|y| r.color_of(x, y, &theme).map(|v| v.1)))
+            .collect();
+        assert_eq!(before, after, "terminal colors rotated over time");
     }
 
     #[test]

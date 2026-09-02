@@ -11,6 +11,17 @@ use thiserror::Error;
 
 pub type Rgb = (u8, u8, u8);
 
+pub const DEFAULT_TERMINAL_PALETTE: [Rgb; 6] = [
+    // The chromatic entries from the common xterm-compatible ANSI palette.
+    // Black, white and both greys are deliberately absent.
+    (205, 49, 49),
+    (229, 229, 16),
+    (13, 188, 121),
+    (17, 168, 205),
+    (36, 114, 200),
+    (188, 63, 188),
+];
+
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum ColorParseError {
     #[error("expected a colour name or #RRGGBB, got {0:?}")]
@@ -138,6 +149,8 @@ pub struct Theme {
     /// The colour a trail decays toward before it is erased.
     pub dim: Rgb,
     pub rainbow: bool,
+    /// Chromatic palette used by `--color terminal`, one entry per column.
+    pub terminal_palette: Option<[Rgb; 6]>,
     /// Quantisation steps; 0 disables quantisation entirely.
     pub levels: u16,
 }
@@ -150,6 +163,7 @@ impl Theme {
             bright: base,
             dim: scale(base, 0.18),
             rainbow,
+            terminal_palette: None,
             levels: DEFAULT_LEVELS,
         }
     }
@@ -158,7 +172,10 @@ impl Theme {
     /// rotates the hue in rainbow mode and is ignored otherwise.
     #[must_use]
     pub fn color(&self, glow: f32, is_head: bool, hue_shift: f32) -> Rgb {
-        let (bright, dim, head) = if self.rainbow {
+        let (bright, dim, head) = if let Some(palette) = self.terminal_palette {
+            let base = palette[(hue_shift.rem_euclid(1.0) * palette.len() as f32).floor() as usize];
+            (base, scale(base, 0.18), head_tint(base))
+        } else if self.rainbow {
             let b = hsv_to_rgb(hue_shift.rem_euclid(1.0), 0.85, 1.0);
             (b, scale(b, 0.18), head_tint(b))
         } else {
@@ -229,7 +246,11 @@ pub fn hsv_to_rgb(h: f32, s: f32, v: f32) -> Rgb {
 
 /// A parsed base colour plus whether the user asked for rainbow mode.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct BaseColor(pub Rgb, pub bool);
+pub enum BaseColor {
+    Rgb(Rgb),
+    Rainbow,
+    Terminal,
+}
 
 impl FromStr for BaseColor {
     type Err = ColorParseError;
@@ -246,7 +267,8 @@ impl FromStr for BaseColor {
             "orange" => (255, 140, 30),
             "purple" => (170, 90, 255),
             "white" => (220, 220, 220),
-            "rainbow" => return Ok(BaseColor((0, 255, 65), true)),
+            "rainbow" => return Ok(BaseColor::Rainbow),
+            "terminal" => return Ok(BaseColor::Terminal),
             hex => {
                 let hex = hex.strip_prefix('#').unwrap_or(hex);
                 if hex.len() != 6 || !hex.chars().all(|c| c.is_ascii_hexdigit()) {
@@ -257,7 +279,7 @@ impl FromStr for BaseColor {
                 (p(0), p(2), p(4))
             }
         };
-        Ok(BaseColor(rgb, false))
+        Ok(BaseColor::Rgb(rgb))
     }
 }
 
@@ -298,15 +320,19 @@ mod tests {
     fn named_colors_parse() {
         assert_eq!(
             BaseColor::from_str("green"),
-            Ok(BaseColor((0, 255, 65), false))
+            Ok(BaseColor::Rgb((0, 255, 65)))
         );
         assert_eq!(
             BaseColor::from_str("  GREEN  "),
-            Ok(BaseColor((0, 255, 65), false))
+            Ok(BaseColor::Rgb((0, 255, 65)))
         );
         assert_eq!(
             BaseColor::from_str("rainbow"),
-            Ok(BaseColor((0, 255, 65), true))
+            Ok(BaseColor::Rainbow)
+        );
+        assert_eq!(
+            BaseColor::from_str("terminal"),
+            Ok(BaseColor::Terminal)
         );
     }
 
@@ -314,11 +340,11 @@ mod tests {
     fn hex_colors_parse_with_and_without_hash() {
         assert_eq!(
             BaseColor::from_str("#ff8800"),
-            Ok(BaseColor((255, 136, 0), false))
+            Ok(BaseColor::Rgb((255, 136, 0)))
         );
         assert_eq!(
             BaseColor::from_str("FF8800"),
-            Ok(BaseColor((255, 136, 0), false))
+            Ok(BaseColor::Rgb((255, 136, 0)))
         );
     }
 
@@ -365,6 +391,27 @@ mod tests {
         // Negative and >1 shifts must wrap rather than saturate.
         assert_eq!(t.color(1.0, false, 0.25), t.color(1.0, false, 1.25));
         assert_eq!(t.color(1.0, false, 0.25), t.color(1.0, false, -0.75));
+    }
+
+    #[test]
+    fn terminal_mode_uses_each_palette_color_with_the_normal_continuous_ramp() {
+        let mut t = Theme::from_base((0, 255, 65), false);
+        t.terminal_palette = Some(DEFAULT_TERMINAL_PALETTE);
+        for i in 0..6 {
+            let hue = (i as f32 + 0.5) / 6.0;
+            assert_eq!(t.color(1.0, false, hue), DEFAULT_TERMINAL_PALETTE[i]);
+            assert_eq!(t.color(1.0, true, hue), head_tint(DEFAULT_TERMINAL_PALETTE[i]));
+
+            let mut previous = -1.0;
+            let mut distinct = std::collections::BTreeSet::new();
+            for step in 0..=20 {
+                let color = t.color(step as f32 / 20.0, false, hue);
+                assert!(luma(color) >= previous, "palette ramp dipped at step {step}");
+                previous = luma(color);
+                distinct.insert(color);
+            }
+            assert!(distinct.len() >= 8, "palette color {i} only produced {distinct:?}");
+        }
     }
 
     #[test]

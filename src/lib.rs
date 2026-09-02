@@ -19,6 +19,7 @@ pub use charset::Charset;
 pub use rain::{Config, Rain};
 pub use render::{DEFAULT_COLOR_TOLERANCE, DrawStats, Renderer};
 pub use theme::{
-    BaseColor, DEFAULT_LEVELS, Depth, Levels, MIN_AUTO_LEVELS, Rgb, Theme, auto_levels,
+    BaseColor, DEFAULT_LEVELS, DEFAULT_TERMINAL_PALETTE, Depth, Levels, MIN_AUTO_LEVELS, Rgb, Theme,
+    auto_levels,
 };
 pub use writer::FrameWriter;

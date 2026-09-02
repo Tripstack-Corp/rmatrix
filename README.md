@@ -32,7 +32,7 @@ rmatrix targets what terminals can actually do now:
 | Redraw | full screen | damage-tracked; an unchanged frame emits zero bytes |
 | Under load | blocks the animation | writes are off the simulation thread; a slow terminal costs frames, never pacing |
 | Terminal layer | ncurses | crossterm — no system library to install |
-| Colour | 8 ANSI colours | any `#RRGGBB`, with automatic truecolor/256/16 fallback |
+| Colour | 8 ANSI colours | any `#RRGGBB`, rainbow, or your terminal's six chromatic ANSI colors |
 | Reproducibility | — | `--seed` replays an identical animation |
 
 ## Install
@@ -89,7 +89,7 @@ cargo build --release && cp target/release/rmatrix ~/.local/bin/
 ```
 rmatrix [OPTIONS]
 
-  -C, --color <COLOR>      Colour name, #RRGGBB, or "rainbow"  [default: green]
+  -C, --color <COLOR>      Colour name, #RRGGBB, "rainbow", or "terminal" [default: green]
   -c, --charset <SET>      classic | katakana | ascii | alnum | binary | hex |
                            greek | symbols | custom            [default: classic]
       --custom <GLYPHS>    Glyphs to use with `--charset custom`
@@ -121,6 +121,7 @@ rmatrix --tail-max 40 -d 0.75
 
 rmatrix -C '#00ff41' --tail-max 40 -d 0.8   # dense, long, film-green
 rmatrix -c binary -C cyan                   # ones and zeroes
+rmatrix -C terminal                         # random terminal-theme color per column, fading trail
 rmatrix -S 0.4                              # slow motion; -S 0.05 is a crawl
 rmatrix -s                                  # screensaver, exits on a keypress
 rmatrix --seed 1337                         # same rain every time
