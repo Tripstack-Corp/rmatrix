@@ -326,14 +326,8 @@ mod tests {
             BaseColor::from_str("  GREEN  "),
             Ok(BaseColor::Rgb((0, 255, 65)))
         );
-        assert_eq!(
-            BaseColor::from_str("rainbow"),
-            Ok(BaseColor::Rainbow)
-        );
-        assert_eq!(
-            BaseColor::from_str("terminal"),
-            Ok(BaseColor::Terminal)
-        );
+        assert_eq!(BaseColor::from_str("rainbow"), Ok(BaseColor::Rainbow));
+        assert_eq!(BaseColor::from_str("terminal"), Ok(BaseColor::Terminal));
     }
 
     #[test]
@@ -397,20 +391,26 @@ mod tests {
     fn terminal_mode_uses_each_palette_color_with_the_normal_continuous_ramp() {
         let mut t = Theme::from_base((0, 255, 65), false);
         t.terminal_palette = Some(DEFAULT_TERMINAL_PALETTE);
-        for i in 0..6 {
+        for (i, base) in DEFAULT_TERMINAL_PALETTE.iter().enumerate() {
             let hue = (i as f32 + 0.5) / 6.0;
-            assert_eq!(t.color(1.0, false, hue), DEFAULT_TERMINAL_PALETTE[i]);
-            assert_eq!(t.color(1.0, true, hue), head_tint(DEFAULT_TERMINAL_PALETTE[i]));
+            assert_eq!(t.color(1.0, false, hue), *base);
+            assert_eq!(t.color(1.0, true, hue), head_tint(*base));
 
             let mut previous = -1.0;
             let mut distinct = std::collections::BTreeSet::new();
             for step in 0..=20 {
                 let color = t.color(step as f32 / 20.0, false, hue);
-                assert!(luma(color) >= previous, "palette ramp dipped at step {step}");
+                assert!(
+                    luma(color) >= previous,
+                    "palette ramp dipped at step {step}"
+                );
                 previous = luma(color);
                 distinct.insert(color);
             }
-            assert!(distinct.len() >= 8, "palette color {i} only produced {distinct:?}");
+            assert!(
+                distinct.len() >= 8,
+                "palette color {i} only produced {distinct:?}"
+            );
         }
     }
 

@@ -154,13 +154,12 @@ const MAX_STEP_FLOOR: f32 = 0.1;
 
 /// Pure argument validation, split out so it is testable without a terminal.
 pub(crate) fn validate(args: &Args) -> Result<Settings> {
-    let (base, rainbow, terminal) = match BaseColor::from_str(&args.color)
-        .context("invalid --color")?
-    {
-        BaseColor::Rgb(rgb) => (rgb, false, false),
-        BaseColor::Rainbow => ((0, 255, 65), true, false),
-        BaseColor::Terminal => ((0, 255, 65), false, true),
-    };
+    let (base, rainbow, terminal) =
+        match BaseColor::from_str(&args.color).context("invalid --color")? {
+            BaseColor::Rgb(rgb) => (rgb, false, false),
+            BaseColor::Rainbow => ((0, 255, 65), true, false),
+            BaseColor::Terminal => ((0, 255, 65), false, true),
+        };
 
     if !(0.0..=1.0).contains(&args.density) {
         bail!(

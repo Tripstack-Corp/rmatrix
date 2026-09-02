@@ -11,8 +11,8 @@ use crossterm::terminal::{
     LeaveAlternateScreen,
 };
 use crossterm::{ExecutableCommand, QueueableCommand, cursor};
-use rmatrix::writer::{self, FrameWriter};
 use rmatrix::Rgb;
+use rmatrix::writer::{self, FrameWriter};
 use rustix::event::{PollFd, PollFlags, poll};
 use rustix::time::Timespec;
 use std::fs::{File, OpenOptions};
@@ -101,7 +101,11 @@ impl Sink {
 /// crossterm starts its event reader so the two never compete for input. Failure
 /// is deliberately silent: palette queries are optional terminal functionality.
 pub(crate) fn query_palette() -> Option<[Rgb; 6]> {
-    let mut tty = OpenOptions::new().read(true).write(true).open("/dev/tty").ok()?;
+    let mut tty = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open("/dev/tty")
+        .ok()?;
     for index in PALETTE_INDEXES {
         write!(tty, "\x1b]4;{index};?\x07").ok()?;
     }
@@ -152,19 +156,22 @@ fn parse_palette(bytes: &[u8]) -> Option<[Rgb; 6]> {
         };
         if let Ok(reply) = std::str::from_utf8(&rest[..end])
             && let Some((index, rgb)) = parse_palette_reply(reply)
-            && let Some(slot) = PALETTE_INDEXES.iter().position(|candidate| *candidate == index)
+            && let Some(slot) = PALETTE_INDEXES
+                .iter()
+                .position(|candidate| *candidate == index)
         {
             colors[slot] = Some(rgb);
         }
-        start = sequence_start + end + if rest.get(end) == Some(&b'\x07') { 1 } else { 2 };
+        start = sequence_start
+            + end
+            + if rest.get(end) == Some(&b'\x07') {
+                1
+            } else {
+                2
+            };
     }
     Some([
-        colors[0]?,
-        colors[1]?,
-        colors[2]?,
-        colors[3]?,
-        colors[4]?,
-        colors[5]?,
+        colors[0]?, colors[1]?, colors[2]?, colors[3]?, colors[4]?, colors[5]?,
     ])
 }
 
@@ -183,7 +190,10 @@ fn parse_palette_reply(reply: &str) -> Option<(u8, Rgb)> {
 }
 
 fn scale_hex(component: &str) -> Option<u8> {
-    if component.is_empty() || component.len() > 4 || !component.bytes().all(|b| b.is_ascii_hexdigit()) {
+    if component.is_empty()
+        || component.len() > 4
+        || !component.bytes().all(|b| b.is_ascii_hexdigit())
+    {
         return None;
     }
     let value = u32::from_str_radix(component, 16).ok()?;
@@ -261,9 +271,18 @@ mod tests {
     #[test]
     fn osc_rgb_components_scale_from_one_to_four_hex_digits() {
         assert_eq!(parse_palette_reply("1;rgb:f/8/0"), Some((1, (255, 136, 0))));
-        assert_eq!(parse_palette_reply("2;rgb:ff/80/00"), Some((2, (255, 128, 0))));
-        assert_eq!(parse_palette_reply("3;rgb:fff/800/000"), Some((3, (255, 128, 0))));
-        assert_eq!(parse_palette_reply("4;rgb:ffff/8080/0000"), Some((4, (255, 128, 0))));
+        assert_eq!(
+            parse_palette_reply("2;rgb:ff/80/00"),
+            Some((2, (255, 128, 0)))
+        );
+        assert_eq!(
+            parse_palette_reply("3;rgb:fff/800/000"),
+            Some((3, (255, 128, 0)))
+        );
+        assert_eq!(
+            parse_palette_reply("4;rgb:ffff/8080/0000"),
+            Some((4, (255, 128, 0)))
+        );
     }
 
     #[test]

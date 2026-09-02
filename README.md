@@ -127,6 +127,10 @@ rmatrix -s                                  # screensaver, exits on a keypress
 rmatrix --seed 1337                         # same rain every time
 ```
 
+`--color terminal` queries the terminal's ANSI palette using OSC 4. Terminals
+that do not support palette queries use fallback colors, so the colors may not
+match the terminal theme exactly. Smooth fading still works in either case.
+
 Quality sizes itself to your terminal by default, including across resizes —
 see [recommended settings](#recommended-settings). Density and tail length are
 left to you, since they are taste rather than cost.

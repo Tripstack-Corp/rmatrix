@@ -309,7 +309,11 @@ impl Rain {
             return None;
         }
         let hue = self.cols.get(x as usize).map_or(0.0, |c| c.hue)
-            + if theme.rainbow { self.elapsed * 0.08 } else { 0.0 };
+            + if theme.rainbow {
+                self.elapsed * 0.08
+            } else {
+                0.0
+            };
         Some((c.ch, theme.color(c.glow, c.head, hue)))
     }
 }
