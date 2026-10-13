@@ -79,7 +79,7 @@ pub(crate) struct Args {
     #[arg(short = 'b', long)]
     pub(crate) bold: bool,
 
-    /// Exit on any keypress
+    /// Exit on any keypress or mouse activity
     #[arg(short = 's', long)]
     pub(crate) screensaver: bool,
 
