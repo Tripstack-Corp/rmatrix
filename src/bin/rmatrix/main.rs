@@ -2,11 +2,12 @@
 //!
 //! The binary is deliberately thin: all of the behaviour lives in the library
 //! so tests can drive it without a tty. What is left here is the event loop,
-//! split across six modules so that no one file has to be read end to end:
+//! split across seven modules so that no one file has to be read end to end:
 //!
 //! - [`cli`] — the flags, and `validate`, the only place input is rejected.
 //! - [`keys`] — telling a held key apart from a pressed one.
 //! - [`screensaver`] — what input ends `--screensaver` mode.
+//! - [`palette`] — asking the terminal for its colours, for `--color terminal`.
 //! - [`term`] — raw mode, the alternate screen, teardown, and where frames go.
 //! - [`meter`] — the stats readout behind the `f` key.
 //! - [`bench`] — timing instrumentation behind the hidden `--bench` flag.
@@ -17,6 +18,7 @@ mod bench;
 mod cli;
 mod keys;
 mod meter;
+mod palette;
 mod screensaver;
 mod term;
 
@@ -62,16 +64,18 @@ fn run(args: &Args, s: Settings) -> Result<()> {
         default_hook(info);
     }));
 
-    let terminal_palette = setup(args.bold, args.screensaver, s.terminal)?;
+    setup(args.bold, args.screensaver)?;
 
     let (tw, th) = terminal::size().context("querying terminal size")?;
     let (mut w, mut h) = (tw.max(1), th.max(1));
 
     let mut charset_idx = CYCLE.iter().position(|c| *c == args.charset).unwrap_or(0);
     let mut theme = Theme::from_base(s.base, s.rainbow);
+    // Raw mode is on and the loop has not read input yet, which is the window
+    // the query needs; see palette.rs.
     theme.terminal_palette = s
         .terminal
-        .then_some(terminal_palette.unwrap_or(DEFAULT_TERMINAL_PALETTE));
+        .then(|| palette::query().unwrap_or(DEFAULT_TERMINAL_PALETTE));
     theme.levels = args.levels.resolve(w, h);
     let mut bold = args.bold;
     let mut rain = Rain::new(w, h, s.config);
