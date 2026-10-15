@@ -157,7 +157,6 @@ fn run(args: &Args, s: Settings) -> Result<()> {
                             rain.speed_mul = f32::from(d as u8 - b'0') / 3.0;
                         }
                         KeyCode::Char('r') => {
-                            theme.terminal_palette = None;
                             theme.rainbow = !theme.rainbow;
                             renderer.resize(w, h); // force a full repaint
                         }
