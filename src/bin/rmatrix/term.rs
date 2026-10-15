@@ -5,6 +5,7 @@
 //! afterwards even if we panic, and handing frames to whoever writes them.
 
 use anyhow::{Context, Result};
+use crossterm::event::{DisableMouseCapture, EnableMouseCapture};
 use crossterm::style::{Attribute, SetAttribute};
 use crossterm::terminal::{
     self, Clear, ClearType, DisableLineWrap, EnableLineWrap, EnterAlternateScreen,
@@ -201,7 +202,7 @@ fn scale_hex(component: &str) -> Option<u8> {
     Some(((value * 255 + max / 2) / max) as u8)
 }
 
-pub(crate) fn setup(bold: bool, query_colors: bool) -> Result<Option<[Rgb; 6]>> {
+pub(crate) fn setup(bold: bool, screensaver: bool, query_colors: bool) -> Result<Option<[Rgb; 6]>> {
     terminal::enable_raw_mode().context("entering raw mode")?;
     let palette = query_colors.then(query_palette).flatten();
     let mut out = stdout();
@@ -214,7 +215,21 @@ pub(crate) fn setup(bold: bool, query_colors: bool) -> Result<Option<[Rgb; 6]>> 
     if bold {
         out.execute(SetAttribute(Attribute::Bold))?;
     }
+    if screensaver {
+        out.write_all(&mouse_capture_sequence())?;
+        out.flush()?;
+    }
     Ok(palette)
+}
+
+/// The bytes that make the terminal report the mouse to us.
+///
+/// Only the screensaver asks for this. Capturing the mouse takes it away from
+/// the terminal, so in normal mode it would stop people selecting text.
+pub(crate) fn mouse_capture_sequence() -> Vec<u8> {
+    let mut b = Vec::new();
+    let _ = b.queue(EnableMouseCapture);
+    b
 }
 
 /// The bytes that put the terminal back the way we found it.
@@ -227,6 +242,10 @@ pub(crate) fn restore_sequence() -> Vec<u8> {
     let _ = b.write_all(b"\x1b[23;2t"); // give the window title back
     let _ = b.queue(SetAttribute(Attribute::Reset));
     let _ = b.queue(cursor::Show);
+    // Unconditional: turning off a mode that was never on is a no-op, and
+    // leaving it on after exit makes every mouse twitch type escape codes into
+    // the shell. The panic hook has no idea which mode we were in.
+    let _ = b.queue(DisableMouseCapture);
     let _ = b.queue(EnableLineWrap);
     let _ = b.queue(LeaveAlternateScreen);
     b
@@ -297,5 +316,44 @@ mod tests {
         ] {
             assert_eq!(parse_palette_reply(bad), None, "accepted {bad:?}");
         }
+    }
+
+    /// The DEC private modes a sequence sets (`ESC [ ? n h`) or resets
+    /// (`ESC [ ? n l`).
+    fn private_modes(bytes: &[u8], suffix: char) -> Vec<String> {
+        let text = String::from_utf8_lossy(bytes);
+        text.split("\x1b[?")
+            .skip(1)
+            .filter_map(|rest| {
+                let end = rest.find(|c: char| !c.is_ascii_digit() && c != ';')?;
+                rest[end..].starts_with(suffix).then_some(&rest[..end])
+            })
+            .flat_map(|params| params.split(';'))
+            .map(str::to_owned)
+            .collect()
+    }
+
+    #[test]
+    fn the_teardown_turns_off_every_mouse_mode_the_screensaver_turns_on() {
+        // If one of these survives exit, the shell the user returns to receives
+        // a burst of escape codes every time the mouse moves, and it stays that
+        // way until they run `reset`.
+        let enabled = private_modes(&mouse_capture_sequence(), 'h');
+        let disabled = private_modes(&restore_sequence(), 'l');
+        assert!(!enabled.is_empty(), "the capture sequence enables nothing");
+        for mode in &enabled {
+            assert!(
+                disabled.contains(mode),
+                "?{mode} is enabled but never reset"
+            );
+        }
+    }
+
+    #[test]
+    fn the_screensaver_hears_the_mouse_move_with_no_button_held() {
+        // Without any-motion tracking (?1003) the terminal reports only clicks,
+        // drags and scrolls, and nudging the mouse to wake the screen would do
+        // nothing.
+        assert!(private_modes(&mouse_capture_sequence(), 'h').contains(&"1003".to_owned()));
     }
 }

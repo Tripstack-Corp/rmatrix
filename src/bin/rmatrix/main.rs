@@ -2,10 +2,11 @@
 //!
 //! The binary is deliberately thin: all of the behaviour lives in the library
 //! so tests can drive it without a tty. What is left here is the event loop,
-//! split across five modules so that no one file has to be read end to end:
+//! split across six modules so that no one file has to be read end to end:
 //!
 //! - [`cli`] — the flags, and `validate`, the only place input is rejected.
 //! - [`keys`] — telling a held key apart from a pressed one.
+//! - [`screensaver`] — what input ends `--screensaver` mode.
 //! - [`term`] — raw mode, the alternate screen, teardown, and where frames go.
 //! - [`meter`] — the stats readout behind the `f` key.
 //! - [`bench`] — timing instrumentation behind the hidden `--bench` flag.
@@ -16,6 +17,7 @@ mod bench;
 mod cli;
 mod keys;
 mod meter;
+mod screensaver;
 mod term;
 
 use anyhow::{Context, Result, bail};
@@ -60,7 +62,7 @@ fn run(args: &Args, s: Settings) -> Result<()> {
         default_hook(info);
     }));
 
-    let terminal_palette = setup(args.bold, s.terminal)?;
+    let terminal_palette = setup(args.bold, args.screensaver, s.terminal)?;
 
     let (tw, th) = terminal::size().context("querying terminal size")?;
     let (mut w, mut h) = (tw.max(1), th.max(1));
@@ -97,6 +99,7 @@ fn run(args: &Args, s: Settings) -> Result<()> {
         }
     }
 
+    let started = Instant::now();
     let mut tick_at = Instant::now();
     let mut last_frame = Instant::now();
     // Absolute cadence: the next tick is scheduled from the last *deadline*, not
@@ -112,7 +115,11 @@ fn run(args: &Args, s: Settings) -> Result<()> {
             if !event::poll(remaining)? {
                 break;
             }
-            match event::read()? {
+            let event = event::read()?;
+            if args.screensaver && screensaver::dismisses(&event, started.elapsed()) {
+                break 'outer;
+            }
+            match event {
                 Event::Key(KeyEvent {
                     code,
                     modifiers,
@@ -124,8 +131,10 @@ fn run(args: &Args, s: Settings) -> Result<()> {
                     {
                         break 'outer;
                     }
+                    // Inside the startup grace; see screensaver.rs. The controls
+                    // stay off so a stray early key can't change the display.
                     if args.screensaver {
-                        break 'outer;
+                        continue;
                     }
                     // Quitting is checked before the auto-repeat filter and is
                     // idempotent, so a repeat can never swallow it.

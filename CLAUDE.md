@@ -20,6 +20,7 @@ src/bin/rmatrix/  the binary — a thin wrapper, and kept thin
   main.rs       the event loop, and nothing else
   cli.rs        flags, Settings, validate()
   meter.rs      the stats readout behind `f`
+  screensaver.rs  what input ends --screensaver, and the startup grace
   term.rs       raw mode, alternate screen, teardown, the frame Sink
   bench.rs      timing instrumentation behind --bench
 tests/          integration tests that drive the real byte stream

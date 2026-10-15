@@ -103,7 +103,7 @@ rmatrix [OPTIONS]
                            terminal and re-pick on resize     [default: auto]
       --stats              Start with the stats overlay shown
   -b, --bold               Bold glyphs
-  -s, --screensaver        Exit on any keypress
+  -s, --screensaver        Exit on any keypress or mouse activity
       --seed <N>           Replay a specific animation
       --color-depth <D>    auto | truecolor | 256 | 16         [default: auto]
 ```
@@ -123,7 +123,7 @@ rmatrix -C '#00ff41' --tail-max 40 -d 0.8   # dense, long, film-green
 rmatrix -c binary -C cyan                   # ones and zeroes
 rmatrix -C terminal                         # random terminal-theme color per column, fading trail
 rmatrix -S 0.4                              # slow motion; -S 0.05 is a crawl
-rmatrix -s                                  # screensaver, exits on a keypress
+rmatrix -s                                  # screensaver, exits on a key or the mouse
 rmatrix --seed 1337                         # same rain every time
 ```
 
@@ -339,6 +339,19 @@ mirrored letterforms — that is the font, not the charset. ([MP4](docs/font.mp4
 That font is Basic Latin only — it maps ASCII to Matrix glyphs and has no
 katakana — which is why `-c ascii` is the right pairing. `rmatrix`'s ASCII set is
 `0x21..=0x7A`, entirely within the font's coverage, so no glyph falls back.
+
+## Use it as a tmux screensaver
+
+```tmux
+set -g lock-after-time 300
+set -g lock-command "rmatrix -s"
+```
+
+As a lock command it talks to your terminal directly, so a key, a click, a
+scroll or just moving the mouse brings you back. Run `rmatrix -s` inside a
+pane instead and tmux only passes the mouse along with `set -g mouse on`;
+keys work either way. Input in the first quarter-second is ignored, so a
+hand still on the trackpad doesn't dismiss it before it starts.
 
 ## Bind it to a hotkey (iTerm2)
 
