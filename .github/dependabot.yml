@@ -1,0 +1,55 @@
+# Dependabot version updates: the routine bump PRs.
+#
+# Security is covered separately. Dependabot alerts and security updates are
+# repository settings, not this file, and .github/workflows/audit.yml runs
+# cargo-audit against the lockfile every Monday. This file only keeps
+# dependencies from drifting, so that when an advisory does land the fix is a
+# patch bump rather than a migration across three minor versions.
+#
+# Monday 06:00 UTC, an hour before the audit job, so the week's bumps and the
+# week's advisory report arrive together.
+version: 2
+updates:
+  - package-ecosystem: cargo
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: build
+      include: scope
+    groups:
+      # Routine minor and patch bumps share one PR to keep the churn down.
+      # Majors still arrive one at a time, for a deliberate look.
+      #
+      # crossterm and rand are left out on purpose. crossterm writes escape
+      # sequences on our behalf, so a bump can change the bytes we emit, and
+      # bytes emitted is the number the README measures. rand's StdRng is
+      # documented as not reproducible across versions, so a bump can change
+      # what `--seed` replays and shift every seeded perf figure without a line
+      # of ours changing. Each gets a PR of its own so it is the only thing in
+      # the diff when `cargo run --release --example perf` is re-run.
+      cargo-minor-patch:
+        update-types:
+          - minor
+          - patch
+        exclude-patterns:
+          - crossterm
+          - rand
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+    # Actions stay pinned to commit SHAs with the version in a trailing comment.
+    # Dependabot updates both the SHA and the comment, which keeps them pinned.
+    commit-message:
+      prefix: ci
+      include: scope
+    groups:
+      github-actions:
+        patterns:
+          - "*"
