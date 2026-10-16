@@ -2,11 +2,12 @@
 //!
 //! The binary is deliberately thin: all of the behaviour lives in the library
 //! so tests can drive it without a tty. What is left here is the event loop,
-//! split across six modules so that no one file has to be read end to end:
+//! split across seven modules so that no one file has to be read end to end:
 //!
 //! - [`cli`] — the flags, and `validate`, the only place input is rejected.
 //! - [`keys`] — telling a held key apart from a pressed one.
 //! - [`screensaver`] — what input ends `--screensaver` mode.
+//! - [`palette`] — asking the terminal for its colours, for `--color terminal`.
 //! - [`term`] — raw mode, the alternate screen, teardown, and where frames go.
 //! - [`meter`] — the stats readout behind the `f` key.
 //! - [`bench`] — timing instrumentation behind the hidden `--bench` flag.
@@ -17,6 +18,7 @@ mod bench;
 mod cli;
 mod keys;
 mod meter;
+mod palette;
 mod screensaver;
 mod term;
 
@@ -24,7 +26,7 @@ use anyhow::{Context, Result, bail};
 use clap::Parser;
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use crossterm::terminal;
-use rmatrix::{Levels, Rain, Renderer, Theme};
+use rmatrix::{DEFAULT_TERMINAL_PALETTE, Levels, Rain, Renderer, Theme};
 use std::process::ExitCode;
 use std::time::Instant;
 
@@ -69,6 +71,11 @@ fn run(args: &Args, s: Settings) -> Result<()> {
 
     let mut charset_idx = CYCLE.iter().position(|c| *c == args.charset).unwrap_or(0);
     let mut theme = Theme::from_base(s.base, s.rainbow);
+    // Raw mode is on and the loop has not read input yet, which is the window
+    // the query needs; see palette.rs.
+    theme.terminal_palette = s
+        .terminal
+        .then(|| palette::query().unwrap_or(DEFAULT_TERMINAL_PALETTE));
     theme.levels = args.levels.resolve(w, h);
     let mut bold = args.bold;
     let mut rain = Rain::new(w, h, s.config);

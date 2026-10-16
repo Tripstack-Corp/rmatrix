@@ -308,7 +308,14 @@ impl Rain {
         if c.glow <= 0.0 {
             return None;
         }
-        let hue = self.cols.get(x as usize).map_or(0.0, |c| c.hue) + self.elapsed * 0.08;
+        // Only the rainbow turns. In terminal-palette mode the hue picks the
+        // column's colour, and a turning hue would re-pick it every frame.
+        let hue = self.cols.get(x as usize).map_or(0.0, |c| c.hue)
+            + if theme.rainbow {
+                self.elapsed * 0.08
+            } else {
+                0.0
+            };
         Some((c.ch, theme.color(c.glow, c.head, hue)))
     }
 }
@@ -361,6 +368,101 @@ mod tests {
         let a = run(40, 20, cfg(7), 120);
         let b = run(40, 20, cfg(8), 120);
         assert_ne!(a, b);
+    }
+
+    #[test]
+    fn rainbow_mode_sweeps_the_hue_across_the_screen() {
+        // The rainbow is a gradient: each column's hue is a step round the
+        // wheel from its neighbour's. The first cut of `--color terminal` gave
+        // every column a random hue instead, which turned the rainbow into
+        // noise, and the extra draws from the RNG changed what --seed replays.
+        fn hue((r, g, b): Rgb) -> f32 {
+            let (r, g, b) = (f32::from(r), f32::from(g), f32::from(b));
+            let max = r.max(g).max(b);
+            let d = max - r.min(g).min(b);
+            let h = if d == 0.0 {
+                0.0
+            } else if max == r {
+                ((g - b) / d).rem_euclid(6.0)
+            } else if max == g {
+                (b - r) / d + 2.0
+            } else {
+                (r - g) / d + 4.0
+            };
+            h / 6.0
+        }
+        let w = 120;
+        let mut r = Rain::new(
+            w,
+            30,
+            Config {
+                density: 1.0,
+                ..cfg(7)
+            },
+        );
+        for _ in 0..300 {
+            r.step(1.0 / 60.0);
+        }
+        let theme = Theme::from_base((0, 255, 65), true);
+        // The brightest body cell in each column carries its hue most cleanly.
+        let hues: Vec<f32> = (0..w)
+            .filter_map(|x| {
+                (0..r.height())
+                    .filter_map(|y| r.cell(x, y).filter(|c| !c.head).map(|c| (c.glow, y)))
+                    .max_by(|a, b| a.0.total_cmp(&b.0))
+                    .and_then(|(_, y)| r.color_of(x, y, &theme))
+                    .map(|(_, c)| hue(c))
+            })
+            .collect();
+        assert!(hues.len() > 100, "only {} columns lit", hues.len());
+        let smooth = hues
+            .windows(2)
+            .filter(|p| {
+                let step = (p[1] - p[0]).rem_euclid(1.0);
+                step.min(1.0 - step) < 0.05
+            })
+            .count();
+        assert!(
+            smooth * 10 >= (hues.len() - 1) * 9,
+            "only {smooth} of {} neighbouring columns were close in hue",
+            hues.len() - 1
+        );
+    }
+
+    #[test]
+    fn terminal_colors_are_stable_per_column_and_vary_across_columns() {
+        let mut r = Rain::new(
+            40,
+            20,
+            Config {
+                density: 1.0,
+                ..cfg(7)
+            },
+        );
+        let mut theme = Theme::from_base((0, 255, 65), false);
+        theme.terminal_palette = Some(crate::theme::DEFAULT_TERMINAL_PALETTE);
+        for _ in 0..300 {
+            r.step(1.0 / 60.0);
+        }
+
+        let colors: std::collections::BTreeSet<String> = (0..r.width())
+            .filter_map(|x| {
+                (0..r.height()).find_map(|y| {
+                    r.color_of(x, y, &theme)
+                        .map(|(_, color)| format!("{color:?}"))
+                })
+            })
+            .collect();
+        assert!(colors.len() >= 4, "columns only used {colors:?}");
+
+        let before: Vec<_> = (0..r.width())
+            .map(|x| (0..r.height()).find_map(|y| r.color_of(x, y, &theme).map(|v| v.1)))
+            .collect();
+        r.elapsed += 100.0;
+        let after: Vec<_> = (0..r.width())
+            .map(|x| (0..r.height()).find_map(|y| r.color_of(x, y, &theme).map(|v| v.1)))
+            .collect();
+        assert_eq!(before, after, "terminal colors rotated over time");
     }
 
     #[test]

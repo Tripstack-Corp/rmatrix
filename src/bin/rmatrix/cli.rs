@@ -18,7 +18,7 @@ use std::time::Duration;
     after_help = "KEYS:\n  q, Esc, Ctrl-C  quit\n  space           pause\n  1-9             speed (3 = normal, 1 = 1/3x, 9 = 3x)\n  r               toggle rainbow\n  c               cycle charset\n  b               toggle bold\n  f               toggle stats overlay"
 )]
 pub(crate) struct Args {
-    /// Colour name, #RRGGBB, or "rainbow"
+    /// Colour name, #RRGGBB, "rainbow", or "terminal"
     #[arg(short = 'C', long, default_value = "green")]
     pub(crate) color: String,
 
@@ -132,6 +132,7 @@ pub(crate) const CYCLE: [Charset; 6] = [
 pub(crate) struct Settings {
     pub(crate) base: (u8, u8, u8),
     pub(crate) rainbow: bool,
+    pub(crate) terminal: bool,
     pub(crate) depth: Depth,
     pub(crate) config: Config,
     pub(crate) frame: Duration,
@@ -153,7 +154,12 @@ const MAX_STEP_FLOOR: f32 = 0.1;
 
 /// Pure argument validation, split out so it is testable without a terminal.
 pub(crate) fn validate(args: &Args) -> Result<Settings> {
-    let BaseColor(base, rainbow) = BaseColor::from_str(&args.color).context("invalid --color")?;
+    let (base, rainbow, terminal) =
+        match BaseColor::from_str(&args.color).context("invalid --color")? {
+            BaseColor::Rgb(rgb) => (rgb, false, false),
+            BaseColor::Rainbow => ((0, 255, 65), true, false),
+            BaseColor::Terminal => ((0, 255, 65), false, true),
+        };
 
     if !(0.0..=1.0).contains(&args.density) {
         bail!(
@@ -234,6 +240,7 @@ pub(crate) fn validate(args: &Args) -> Result<Settings> {
     Ok(Settings {
         base,
         rainbow,
+        terminal,
         depth,
         max_step,
         config: Config {
@@ -317,6 +324,15 @@ mod tests {
         let mut a = args();
         a.color = "rainbow".into();
         assert!(validate(&a).expect("valid").rainbow);
+    }
+
+    #[test]
+    fn terminal_color_selects_the_terminal_palette_mode() {
+        let mut a = args();
+        a.color = "terminal".into();
+        let s = validate(&a).expect("valid");
+        assert!(s.terminal);
+        assert!(!s.rainbow);
     }
 
     #[test]

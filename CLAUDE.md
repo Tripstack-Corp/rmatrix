@@ -21,6 +21,7 @@ src/bin/rmatrix/  the binary — a thin wrapper, and kept thin
   cli.rs        flags, Settings, validate()
   meter.rs      the stats readout behind `f`
   screensaver.rs  what input ends --screensaver, and the startup grace
+  palette.rs    asking the terminal for its colours (--color terminal)
   term.rs       raw mode, alternate screen, teardown, the frame Sink
   bench.rs      timing instrumentation behind --bench
 tests/          integration tests that drive the real byte stream
