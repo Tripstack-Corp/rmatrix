@@ -166,3 +166,9 @@ is wrong, bump the version.
 
 Actions are pinned to commit SHAs with the version in a trailing comment. Keep
 them that way when bumping.
+
+After the release is published, `release.yml` dispatches `homebrew.yml`, which
+points the tap's formula at the new checksums. It skips itself until
+`HOMEBREW_APP_ID` and `HOMEBREW_APP_KEY` are set in the `homebrew-tap`
+environment; until then, run `scripts/update-tap.sh <tag>` and push the tap by
+hand. crates.io is still a manual `cargo publish` from the tagged commit.

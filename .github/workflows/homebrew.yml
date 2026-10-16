@@ -1,0 +1,108 @@
+name: Homebrew
+
+# Bump the tap's formula when a release is published.
+#
+# This was a step someone had to remember, and it got forgotten: 0.3.3 was
+# released and never reached the tap, so `brew upgrade rmatrix` sat on 0.3.2
+# until 0.4.0 was published by hand. The formula itself still comes from
+# scripts/update-tap.sh, which reads the release's own SHA256SUMS rather than
+# recomputing anything, so a hand run and this job cannot write different
+# formulas.
+#
+# The tap lives in another repository, and the default GITHUB_TOKEN cannot
+# write there. Rather than a personal token sitting in a secret, this mints a
+# short-lived one from an org-owned GitHub App that can write to the tap and
+# nothing else, the same arrangement spyc uses for the same tap. Without
+# HOMEBREW_APP_ID and HOMEBREW_APP_KEY in the `homebrew-tap` environment the
+# job skips itself and stays green, and scripts/update-tap.sh remains the way
+# to do it by hand.
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to point the formula at (e.g. v0.4.0)"
+        required: true
+
+# One bump at a time. spyc's job pushes to the same tap but sits in another
+# repository, which a concurrency group cannot see; the push below rebases
+# and retries for that case instead.
+concurrency:
+  group: homebrew-tap
+  cancel-in-progress: false
+
+# The App token does the tap write. This one only reads the release.
+permissions:
+  contents: read
+
+jobs:
+  bump:
+    name: Bump the formula
+    runs-on: ubuntu-latest
+    environment: homebrew-tap
+    env:
+      HOMEBREW_APP_ID: ${{ secrets.HOMEBREW_APP_ID }}
+      HOMEBREW_APP_KEY: ${{ secrets.HOMEBREW_APP_KEY }}
+      GH_TOKEN: ${{ github.token }}
+      TAG: ${{ github.event.release.tag_name || inputs.tag }}
+    steps:
+      - name: Skip unless the App is configured
+        id: guard
+        run: |
+          if [ -z "$HOMEBREW_APP_ID" ] || [ -z "$HOMEBREW_APP_KEY" ]; then
+            echo "::notice::Homebrew App credentials are not configured; skipping the tap bump. Run scripts/update-tap.sh $TAG by hand."
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Mint a token for the tap
+        if: steps.guard.outputs.enabled == 'true'
+        id: token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ secrets.HOMEBREW_APP_ID }}
+          private-key: ${{ secrets.HOMEBREW_APP_KEY }}
+          owner: Tripstack-Corp
+          repositories: homebrew-tap
+
+      # The script as of the release being published, not as of main.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: steps.guard.outputs.enabled == 'true'
+        with:
+          ref: ${{ env.TAG }}
+          path: rmatrix
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: steps.guard.outputs.enabled == 'true'
+        with:
+          repository: Tripstack-Corp/homebrew-tap
+          token: ${{ steps.token.outputs.token }}
+          path: tap
+
+      - name: Write the formula
+        if: steps.guard.outputs.enabled == 'true'
+        run: rmatrix/scripts/update-tap.sh "$TAG" "$PWD/tap"
+
+      - name: Commit and push
+        if: steps.guard.outputs.enabled == 'true'
+        run: |
+          set -euo pipefail
+          cd tap
+          git config user.name "rmatrix-release-bot"
+          git config user.email "noreply@tripstack.com"
+          git add Formula/rmatrix.rb
+          if git diff --cached --quiet; then
+            echo "formula already at ${TAG#v}"
+            exit 0
+          fi
+          git commit -m "rmatrix ${TAG#v}"
+          # spyc's bump can land between our checkout and our push. It only
+          # touches Formula/spyc.rb, so a rebase onto it is always clean.
+          for _ in 1 2 3; do
+            git push && exit 0
+            git pull --rebase
+          done
+          echo "::error::could not push to the tap after three attempts"
+          exit 1
