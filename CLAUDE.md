@@ -20,11 +20,12 @@ src/bin/rmatrix/  the binary — a thin wrapper, and kept thin
   main.rs       the event loop, and nothing else
   cli.rs        flags, Settings, validate()
   meter.rs      the stats readout behind `f`
-  screensaver.rs  what input ends --screensaver, and the startup grace
+  screensaver.rs  what input ends --screensaver, the startup grace, the exit drain
   palette.rs    asking the terminal for its colours (--color terminal)
   term.rs       raw mode, alternate screen, teardown, the frame Sink
   bench.rs      timing instrumentation behind --bench
 tests/          integration tests that drive the real byte stream
+  tui.rs        the real binary in a real terminal, via tui-test (opt-in)
 examples/perf.rs  the performance harness the README quotes
 ```
 
@@ -93,6 +94,23 @@ alternative is tempting, say why it lost.
   corruption at all.
 - Every behavioural claim gets a test. Every README performance claim gets a
   reproducible harness.
+- **What only a real terminal can show goes in `tests/tui.rs`.** The state the
+  terminal is left in after exit, mouse reporting, the terminal's own palette:
+  those tests run the built binary under tui-test's Ghostty backend. They are
+  `#[ignore]`d, so `cargo test` needs nothing extra installed. Run them after
+  touching `term.rs`, `screensaver.rs` or `palette.rs`:
+
+  ```
+  brew tap microsoft/tui-test && brew install tui-test
+  cargo test --test tui -- --ignored
+  ```
+
+  Know its blind spots before trusting a pass. `mouse move` sends a report
+  whether or not the program asked for one, so it cannot see stray reports
+  reaching the shell; check the emulator's `mouse_mode` instead. It answers
+  OSC 4 and DA1 instantly, so slow or silent terminals need a pty that answers
+  on a schedule. One session per test, closed by name: never
+  `tui-test close --all`, which closes every session on the machine.
 
 ## Errors
 

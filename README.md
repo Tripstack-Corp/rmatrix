@@ -438,6 +438,16 @@ All three must pass; CI runs them on Linux and macOS. The simulation is seeded b
 the caller rather than from a thread-local RNG, so tests pin every input and
 assert on exact frames — see `same_seed_replays_identically`.
 
+A second suite runs the real binary in a real terminal emulator, for what a model
+terminal cannot show: the state the terminal is left in after exit, mouse
+reporting, and the terminal's own palette under `--color terminal`. It needs
+tui-test, so it is opt-in:
+
+```sh
+brew tap microsoft/tui-test && brew install tui-test
+cargo test --test tui -- --ignored
+```
+
 Layout: `rain.rs` is the model (glow-decay grid, no rendering), `theme.rs` the
 colour ramp, `charset.rs` the glyph sets, `render.rs` the only module that writes
 bytes. `main.rs` is a thin CLI and terminal-state wrapper, so everything else is
