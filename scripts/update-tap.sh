@@ -7,10 +7,11 @@
 # Reads SHA256SUMS from the GitHub release rather than recomputing it, so the
 # formula can never disagree with the artifacts people actually download.
 #
-# This is deliberately a local script rather than a step in release.yml: pushing
-# to a *different* repository from Actions needs a personal access token stored
-# as a secret, and a hand-run script is a smaller thing to trust than a
-# cross-repo write credential sitting in CI.
+# .github/workflows/homebrew.yml runs this after every release, with a
+# short-lived token from an org-owned GitHub App that can write to the tap and
+# nothing else. That replaced running it by hand, which kept the cross-repo
+# credential out of CI but meant someone had to remember: 0.3.3 never reached
+# the tap. Run it by hand when that job is not configured, or to redo a bump.
 
 set -euo pipefail
 

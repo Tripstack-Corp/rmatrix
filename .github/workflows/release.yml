@@ -75,6 +75,11 @@ jobs:
   release:
     needs: build
     runs-on: ubuntu-latest
+    # Job-level permissions replace the workflow's, so contents: write is
+    # restated. actions: write is for dispatching homebrew.yml, below.
+    permissions:
+      contents: write
+      actions: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -125,3 +130,14 @@ jobs:
               --verify-tag \
               dist/*
           fi
+
+      # A release created with GITHUB_TOKEN does not trigger `on: release`
+      # workflows: GitHub stops token-made events cascading. workflow_dispatch is
+      # the one event that token can start, so the tap bump is asked for here
+      # by name. homebrew.yml keeps `on: release` too, for a release published
+      # by hand, and skips itself until its App credentials are configured.
+      - name: Bump the Homebrew tap
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: gh workflow run homebrew.yml --repo "$GITHUB_REPOSITORY" -f tag="$TAG"
