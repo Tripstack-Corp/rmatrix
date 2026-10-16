@@ -97,6 +97,8 @@ fn run(args: &Args, s: Settings) -> Result<()> {
     }
 
     let started = Instant::now();
+    // A mouse wake leaves the rest of the gesture in flight; see screensaver.rs.
+    let mut woken_by_mouse = false;
     let mut tick_at = Instant::now();
     let mut last_frame = Instant::now();
     // Absolute cadence: the next tick is scheduled from the last *deadline*, not
@@ -114,6 +116,7 @@ fn run(args: &Args, s: Settings) -> Result<()> {
             }
             let event = event::read()?;
             if args.screensaver && screensaver::dismisses(&event, started.elapsed()) {
+                woken_by_mouse = matches!(event, Event::Mouse(_));
                 break 'outer;
             }
             match event {
@@ -254,6 +257,11 @@ fn run(args: &Args, s: Settings) -> Result<()> {
     }
 
     if sink.shutdown(restore_sequence()) {
+        // Capture is off now, so the tail is finite; it has to go while raw
+        // mode still keeps it from being echoed.
+        if woken_by_mouse {
+            screensaver::drain_mouse_tail();
+        }
         // The sink emitted the escape sequence itself; only the termios flip is
         // left, and that is ours.
         let _ = terminal::disable_raw_mode();
