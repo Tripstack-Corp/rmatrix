@@ -168,8 +168,8 @@ Actions are pinned to commit SHAs with the version in a trailing comment. Keep
 them that way when bumping.
 
 After the release is published, `release.yml` dispatches `homebrew.yml`, which
-points the tap's formula at the new checksums. It skips itself until the
-`HOMEBREW_APP_CLIENT_ID` variable and the `HOMEBREW_APP_KEY` secret are set in
-the `homebrew-tap` environment; until then, run `scripts/update-tap.sh <tag>`
-and push the tap by hand. crates.io is still a manual `cargo publish` from the
-tagged commit.
+points the tap's formula at the new checksums. It fails, rather than skipping,
+if the `homebrew-tap` environment lacks the `HOMEBREW_APP_CLIENT_ID` variable or
+the `HOMEBREW_APP_KEY` secret. Whenever it fails, run
+`scripts/update-tap.sh <tag>` and push the tap by hand. crates.io is still a
+manual `cargo publish` from the tagged commit.

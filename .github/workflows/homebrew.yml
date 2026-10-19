@@ -16,8 +16,10 @@ name: Homebrew
 # named by its client ID rather than its App ID, which the token action has
 # deprecated; a client ID is public, so it is a variable and only the key is a
 # secret. Without the HOMEBREW_APP_CLIENT_ID variable and the HOMEBREW_APP_KEY
-# secret in the `homebrew-tap` environment the job skips itself and stays
-# green, and scripts/update-tap.sh remains the way to do it by hand.
+# secret in the `homebrew-tap` environment the job fails. It used to skip and
+# stay green, which suited it before the App was set up, but a green skip after
+# a release is 0.3.3 again: a formula left behind with nothing to say so.
+# scripts/update-tap.sh remains the way to do it by hand.
 on:
   release:
     types: [published]
@@ -49,18 +51,14 @@ jobs:
       GH_TOKEN: ${{ github.token }}
       TAG: ${{ github.event.release.tag_name || inputs.tag }}
     steps:
-      - name: Skip unless the App is configured
-        id: guard
+      - name: Check the App is configured
         run: |
           if [ -z "$HOMEBREW_APP_CLIENT_ID" ] || [ -z "$HOMEBREW_APP_KEY" ]; then
-            echo "::notice::Homebrew App credentials are not configured; skipping the tap bump. Run scripts/update-tap.sh $TAG by hand."
-            echo "enabled=false" >> "$GITHUB_OUTPUT"
-          else
-            echo "enabled=true" >> "$GITHUB_OUTPUT"
+            echo "::error::the homebrew-tap environment needs the HOMEBREW_APP_CLIENT_ID variable and the HOMEBREW_APP_KEY secret; the tap was not bumped. Run scripts/update-tap.sh $TAG by hand."
+            exit 1
           fi
 
       - name: Mint a token for the tap
-        if: steps.guard.outputs.enabled == 'true'
         id: token
         uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
         with:
@@ -71,24 +69,20 @@ jobs:
 
       # The script as of the release being published, not as of main.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        if: steps.guard.outputs.enabled == 'true'
         with:
           ref: ${{ env.TAG }}
           path: rmatrix
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        if: steps.guard.outputs.enabled == 'true'
         with:
           repository: Tripstack-Corp/homebrew-tap
           token: ${{ steps.token.outputs.token }}
           path: tap
 
       - name: Write the formula
-        if: steps.guard.outputs.enabled == 'true'
         run: rmatrix/scripts/update-tap.sh "$TAG" "$PWD/tap"
 
       - name: Commit and push
-        if: steps.guard.outputs.enabled == 'true'
         run: |
           set -euo pipefail
           cd tap
