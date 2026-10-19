@@ -12,10 +12,12 @@ name: Homebrew
 # The tap lives in another repository, and the default GITHUB_TOKEN cannot
 # write there. Rather than a personal token sitting in a secret, this mints a
 # short-lived one from an org-owned GitHub App that can write to the tap and
-# nothing else, the same arrangement spyc uses for the same tap. Without
-# HOMEBREW_APP_ID and HOMEBREW_APP_KEY in the `homebrew-tap` environment the
-# job skips itself and stays green, and scripts/update-tap.sh remains the way
-# to do it by hand.
+# nothing else, the same arrangement spyc uses for the same tap. The App is
+# named by its client ID rather than its App ID, which the token action has
+# deprecated; a client ID is public, so it is a variable and only the key is a
+# secret. Without the HOMEBREW_APP_CLIENT_ID variable and the HOMEBREW_APP_KEY
+# secret in the `homebrew-tap` environment the job skips itself and stays
+# green, and scripts/update-tap.sh remains the way to do it by hand.
 on:
   release:
     types: [published]
@@ -42,7 +44,7 @@ jobs:
     runs-on: ubuntu-latest
     environment: homebrew-tap
     env:
-      HOMEBREW_APP_ID: ${{ secrets.HOMEBREW_APP_ID }}
+      HOMEBREW_APP_CLIENT_ID: ${{ vars.HOMEBREW_APP_CLIENT_ID }}
       HOMEBREW_APP_KEY: ${{ secrets.HOMEBREW_APP_KEY }}
       GH_TOKEN: ${{ github.token }}
       TAG: ${{ github.event.release.tag_name || inputs.tag }}
@@ -50,7 +52,7 @@ jobs:
       - name: Skip unless the App is configured
         id: guard
         run: |
-          if [ -z "$HOMEBREW_APP_ID" ] || [ -z "$HOMEBREW_APP_KEY" ]; then
+          if [ -z "$HOMEBREW_APP_CLIENT_ID" ] || [ -z "$HOMEBREW_APP_KEY" ]; then
             echo "::notice::Homebrew App credentials are not configured; skipping the tap bump. Run scripts/update-tap.sh $TAG by hand."
             echo "enabled=false" >> "$GITHUB_OUTPUT"
           else
@@ -62,7 +64,7 @@ jobs:
         id: token
         uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
         with:
-          app-id: ${{ secrets.HOMEBREW_APP_ID }}
+          client-id: ${{ vars.HOMEBREW_APP_CLIENT_ID }}
           private-key: ${{ secrets.HOMEBREW_APP_KEY }}
           owner: Tripstack-Corp
           repositories: homebrew-tap
