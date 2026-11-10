@@ -62,6 +62,18 @@ and put `rmatrix` somewhere on your `PATH`. Each release ships `SHA256SUMS`:
 shasum -a 256 -c SHA256SUMS --ignore-missing
 ```
 
+### Fedora (COPR)
+
+Community-maintained, courtesy of [@shivsdev2](https://github.com/shivsdev2):
+
+```sh
+sudo dnf copr enable shivanksharma12/rmatrix
+sudo dnf install rmatrix-reloaded
+```
+
+Not in the official Fedora repos yet — see
+[#18](https://github.com/Tripstack-Corp/rmatrix/issues/18).
+
 ### With cargo
 
 ```sh
