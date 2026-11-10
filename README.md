@@ -64,15 +64,14 @@ shasum -a 256 -c SHA256SUMS --ignore-missing
 
 ### Fedora (COPR)
 
-Community-maintained, courtesy of [@shivsdev2](https://github.com/shivsdev2):
+Packaged by [@shivsdev2](https://github.com/shivsdev2) in their own COPR
+repository, independently of this project and not in the official Fedora repos
+(see [#18](https://github.com/Tripstack-Corp/rmatrix/issues/18)):
 
 ```sh
 sudo dnf copr enable shivanksharma12/rmatrix
 sudo dnf install rmatrix-reloaded
 ```
-
-Not in the official Fedora repos yet — see
-[#18](https://github.com/Tripstack-Corp/rmatrix/issues/18).
 
 ### With cargo
 
